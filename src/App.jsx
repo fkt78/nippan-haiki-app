@@ -42,8 +42,10 @@ const dailyReportsPath = `${appBasePath}/daily_reports`;
 
 // PapaParse Loader
 const usePapaParse = () => {
-    const [ready, setReady] = useState(!!window.Papa);
+    const [ready, setReady] = useState(typeof window !== 'undefined' && !!window.Papa);
     useEffect(() => {
+        if (typeof window === 'undefined') return;
+        
         if (window.Papa) {
             setReady(true);
             return;
@@ -52,7 +54,18 @@ const usePapaParse = () => {
         script.src = "https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.3.2/papaparse.min.js";
         script.async = true;
         script.onload = () => setReady(true);
+        script.onerror = () => {
+            console.error("PapaParseの読み込みに失敗しました");
+            setReady(false);
+        };
         document.body.appendChild(script);
+        
+        return () => {
+            // クリーンアップ: スクリプトタグを削除
+            if (script.parentNode) {
+                script.parentNode.removeChild(script);
+            }
+        };
     }, []);
     return ready;
 };
@@ -197,12 +210,41 @@ const useMasterData = (path, statusFilter = null) => {
 // Component Definitions
 // ==============================================================================
 
-const NavItem = ({ icon, label, isActive, onClick }) => (
-    <a href="#" onClick={(e) => { e.preventDefault(); onClick(); }} className={`flex items-center px-4 py-3 my-1 rounded-lg transition-colors duration-200 ${isActive ? 'bg-blue-500 text-white shadow-sm' : 'text-gray-600 hover:bg-gray-200'}`}>
-        {icon}
-        <span className="ml-4 font-medium">{label}</span>
-    </a>
-);
+const NavItem = ({ icon, label, isActive, onClick }) => {
+    const IconWrapper = ({ children, isActive }) => (
+        <div className={`w-12 h-12 flex items-center justify-center rounded-lg mb-3 transition-all duration-300 ${
+            isActive 
+                ? 'bg-white/20 backdrop-blur-sm' 
+                : 'bg-gray-100 group-hover:bg-blue-50'
+        }`}>
+            <div className={`${isActive ? 'text-white' : 'text-gray-600 group-hover:text-blue-600'}`} style={{ width: '24px', height: '24px' }}>
+                {children}
+            </div>
+        </div>
+    );
+
+    return (
+        <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); onClick(); }} 
+            className={`group relative flex flex-col items-center justify-center p-5 rounded-2xl transition-all duration-300 transform hover:scale-[1.02] cursor-pointer min-h-[120px] w-full ${
+                isActive 
+                    ? 'bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700 text-white shadow-xl ring-4 ring-blue-200/50 scale-[1.02]' 
+                    : 'bg-white text-gray-700 shadow-lg hover:shadow-xl border-2 border-gray-200 hover:border-blue-400 hover:bg-gradient-to-br hover:from-blue-50 hover:to-white'
+            }`}
+        >
+            <IconWrapper isActive={isActive}>
+                {icon}
+            </IconWrapper>
+            <span className={`text-xs font-bold text-center leading-tight px-1 ${isActive ? 'text-white' : 'text-gray-700 group-hover:text-blue-700'}`}>
+                {label}
+            </span>
+            {isActive && (
+                <div className="absolute top-2 right-2 w-2.5 h-2.5 bg-white rounded-full shadow-md animate-pulse"></div>
+            )}
+        </button>
+    );
+};
 
 const InputField = ({ label, ...props }) => (
     <div className="mb-4">
@@ -721,13 +763,48 @@ const HomeDashboard = ({ dateRange, onRefresh }) => {
 
     return (
         <div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-6">ホーム</h1>
-            <h2 className="text-xl text-gray-600 mb-6">サマリー ({summaryDateStr})</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-white p-6 rounded-lg shadow"><h2 className="text-lg font-semibold text-gray-500">合計売上</h2><p className="text-4xl font-bold text-blue-600 mt-2">¥{summary.totalSales.toLocaleString()}</p></div>
-                <div className="bg-white p-6 rounded-lg shadow"><h2 className="text-lg font-semibold text-gray-500">合計 廃棄・値下げ</h2><p className="text-4xl font-bold text-red-600 mt-2">¥{summary.totalWaste.toLocaleString()}</p></div>
+            <div className="mb-8">
+                <h1 className="text-4xl font-bold bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent mb-2">ホーム</h1>
+                <h2 className="text-xl text-gray-600 font-medium">サマリー ({summaryDateStr})</h2>
             </div>
-            <div className="mt-10 bg-white p-6 rounded-lg shadow"><h2 className="text-xl font-bold mb-4">ようこそ！</h2><p>左のメニューから各機能をご利用ください。<br/>分析画面では、左下のカレンダーで対象期間を変更できます。</p></div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                <div className="bg-gradient-to-br from-white to-blue-50 p-8 rounded-2xl shadow-lg border-2 border-blue-100 transform hover:scale-105 transition-all duration-300">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-semibold text-gray-600">合計売上</h2>
+                        <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                            <SalesIcon />
+                        </div>
+                    </div>
+                    <p className="text-5xl font-bold bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent mt-2">¥{summary.totalSales.toLocaleString()}</p>
+                </div>
+                <div className="bg-gradient-to-br from-white to-red-50 p-8 rounded-2xl shadow-lg border-2 border-red-100 transform hover:scale-105 transition-all duration-300">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-lg font-semibold text-gray-600">合計 廃棄・値下げ</h2>
+                        <div className="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                            <TrashIcon />
+                        </div>
+                    </div>
+                    <p className="text-5xl font-bold bg-gradient-to-r from-red-600 to-red-800 bg-clip-text text-transparent mt-2">¥{summary.totalWaste.toLocaleString()}</p>
+                </div>
+            </div>
+            <div className="mt-10 bg-gradient-to-br from-white to-gray-50 p-8 rounded-2xl shadow-lg border-2 border-gray-200">
+                <div className="flex items-center mb-4">
+                    <div className="w-10 h-10 bg-gradient-to-br from-blue-400 to-blue-600 rounded-full flex items-center justify-center mr-3">
+                        <span className="text-white text-xl">👋</span>
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-800">ようこそ！</h2>
+                </div>
+                <div className="space-y-2 text-gray-700 leading-relaxed">
+                    <p className="flex items-start">
+                        <span className="text-blue-500 mr-2">•</span>
+                        左のメニューから各機能をご利用ください。
+                    </p>
+                    <p className="flex items-start">
+                        <span className="text-blue-500 mr-2">•</span>
+                        分析画面では、左下のカレンダーで対象期間を変更できます。
+                    </p>
+                </div>
+            </div>
         </div>
     );
 };
@@ -2131,46 +2208,56 @@ function AppContent() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-100 font-sans">
-      <aside className="w-64 bg-white shadow-md flex flex-col flex-shrink-0">
-        <div className="h-16 flex items-center justify-center border-b"><h1 className="text-xl font-bold text-gray-800">経営ダッシュボード</h1></div>
-        <nav className="flex-grow p-4 overflow-y-auto">
-            <p className="px-4 py-2 text-xs text-gray-400 uppercase">分析</p>
-            <NavItem icon={<HomeIcon />} label="ホーム" isActive={currentPage === 'home'} onClick={() => setCurrentPage('home')} />
-            <NavItem icon={<ChartIcon />} label="日販分析" isActive={currentPage === 'nippo'} onClick={() => setCurrentPage('nippo')} />
-            <NavItem icon={<TrashIcon />} label="廃棄分析" isActive={currentPage === 'haiki'} onClick={() => setCurrentPage('haiki')} />
-            <NavItem icon={<ListIcon />} label="データ一覧" isActive={currentPage === 'table'} onClick={() => setCurrentPage('table')} />
-            <NavItem icon={<SlidersIcon />} label="カスタム分析" isActive={currentPage === 'custom'} onClick={() => setCurrentPage('custom')} />
-            <NavItem icon={<SparklesIcon />} label="AI分析" isActive={currentPage === 'ai'} onClick={() => setCurrentPage('ai')} />
-            <NavItem icon={<BrainIcon />} label="AI売上予測" isActive={currentPage === 'ai_forecast'} onClick={() => setCurrentPage('ai_forecast')} />
+    <div className="flex h-screen bg-gradient-to-br from-gray-50 to-gray-100 font-sans">
+      <aside className="w-80 bg-white shadow-xl flex flex-col flex-shrink-0 border-r border-gray-200">
+        <div className="h-20 flex items-center justify-center border-b bg-gradient-to-r from-blue-500 to-blue-600">
+          <h1 className="text-2xl font-bold text-white">経営ダッシュボード</h1>
+        </div>
+        <nav className="flex-grow p-6 overflow-y-auto bg-gray-50">
+            <div className="mb-6">
+              <p className="px-2 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">分析</p>
+              <div className="grid grid-cols-2 gap-3">
+                <NavItem icon={<HomeIcon />} label="ホーム" isActive={currentPage === 'home'} onClick={() => setCurrentPage('home')} />
+                <NavItem icon={<ChartIcon />} label="日販分析" isActive={currentPage === 'nippo'} onClick={() => setCurrentPage('nippo')} />
+                <NavItem icon={<TrashIcon />} label="廃棄分析" isActive={currentPage === 'haiki'} onClick={() => setCurrentPage('haiki')} />
+                <NavItem icon={<ListIcon />} label="データ一覧" isActive={currentPage === 'table'} onClick={() => setCurrentPage('table')} />
+                <NavItem icon={<SlidersIcon />} label="カスタム分析" isActive={currentPage === 'custom'} onClick={() => setCurrentPage('custom')} />
+                <NavItem icon={<SparklesIcon />} label="AI分析" isActive={currentPage === 'ai'} onClick={() => setCurrentPage('ai')} />
+                <NavItem icon={<BrainIcon />} label="AI売上予測" isActive={currentPage === 'ai_forecast'} onClick={() => setCurrentPage('ai_forecast')} />
+              </div>
+            </div>
             
-            <p className="px-4 py-2 mt-4 text-xs text-gray-400 uppercase">入力</p>
-            <NavItem icon={<SalesIcon />} label="日販入力" isActive={currentPage === 'nippoInput'} onClick={() => setCurrentPage('nippoInput')} />
-            <NavItem icon={<TrashIcon />} label="廃棄入力" isActive={currentPage === 'haikiInput'} onClick={() => setCurrentPage('haikiInput')} />
-            <NavItem icon={<UploadCloudIcon />} label="前年一括入力" isActive={currentPage === 'bulkInput'} onClick={() => setCurrentPage('bulkInput')} />
-            <NavItem icon={<CsvIcon />} label="CSV入出力" isActive={currentPage === 'csv'} onClick={() => setCurrentPage('csv')} />
+            <div className="mt-6">
+              <p className="px-2 py-3 text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">入力</p>
+              <div className="grid grid-cols-2 gap-3">
+                <NavItem icon={<SalesIcon />} label="日販入力" isActive={currentPage === 'nippoInput'} onClick={() => setCurrentPage('nippoInput')} />
+                <NavItem icon={<TrashIcon />} label="廃棄入力" isActive={currentPage === 'haikiInput'} onClick={() => setCurrentPage('haikiInput')} />
+                <NavItem icon={<UploadCloudIcon />} label="前年一括入力" isActive={currentPage === 'bulkInput'} onClick={() => setCurrentPage('bulkInput')} />
+                <NavItem icon={<CsvIcon />} label="CSV入出力" isActive={currentPage === 'csv'} onClick={() => setCurrentPage('csv')} />
+              </div>
+            </div>
         </nav>
-        <div className="p-4 border-t bg-gray-50">
-             <h3 className="text-sm font-semibold text-gray-600 mb-2">分析期間</h3>
-            <div className="space-y-2 mb-4">
+        <div className="p-6 border-t bg-white shadow-inner">
+             <h3 className="text-sm font-semibold text-gray-700 mb-4">分析期間</h3>
+            <div className="space-y-3 mb-4">
                 <div>
-                    <label className="text-xs text-gray-500">開始日</label>
-                    <input type="date" value={getLocalDateString(startDate)} onChange={(e) => setStartDate(new Date(`${e.target.value}T00:00:00`))} className="w-full p-1 border rounded-md text-sm"/>
+                    <label className="text-xs font-medium text-gray-600 mb-1 block">開始日</label>
+                    <input type="date" value={getLocalDateString(startDate)} onChange={(e) => setStartDate(new Date(`${e.target.value}T00:00:00`))} className="w-full p-2 border-2 border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"/>
                 </div>
                 <div>
-                    <label className="text-xs text-gray-500">終了日</label>
-                    <input type="date" value={getLocalDateString(endDate)} onChange={(e) => setEndDate(new Date(`${e.target.value}T00:00:00`))} className="w-full p-1 border rounded-md text-sm"/>
+                    <label className="text-xs font-medium text-gray-600 mb-1 block">終了日</label>
+                    <input type="date" value={getLocalDateString(endDate)} onChange={(e) => setEndDate(new Date(`${e.target.value}T00:00:00`))} className="w-full p-2 border-2 border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"/>
                 </div>
-                 <button onClick={handleRefresh} className="w-full bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600 flex items-center justify-center text-sm">
+                 <button onClick={handleRefresh} className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-3 rounded-lg hover:from-blue-600 hover:to-blue-700 flex items-center justify-center text-sm font-semibold shadow-md hover:shadow-lg transition-all transform hover:scale-105">
                     <RefreshCwIcon />
                     <span className="ml-2">データ更新</span>
                 </button>
             </div>
              
             <div className="pt-4 border-t border-gray-200">
-                <div className="flex items-center text-xs text-gray-500">
+                <div className="flex items-center text-xs text-gray-600 bg-green-50 p-3 rounded-lg border border-green-200">
                     <DatabaseIcon />
-                    <span className="ml-2 truncate" title={firebaseConfig.projectId}>Connected to: {firebaseConfig.projectId}</span>
+                    <span className="ml-2 truncate font-medium" title={firebaseConfig.projectId}>Connected: {firebaseConfig.projectId}</span>
                 </div>
             </div>
         </div>
@@ -2182,15 +2269,25 @@ function AppContent() {
 
 export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setIsAuthReady(true);
+        setAuthError(null);
       } else {
-        signInAnonymously(auth).catch((error) => {
+        signInAnonymously(auth)
+          .then(() => {
+            setIsAuthReady(true);
+            setAuthError(null);
+          })
+          .catch((error) => {
             console.error("匿名サインインエラー:", error);
-        });
+            setAuthError(error.message);
+            // エラーが発生してもアプリを続行できるようにする
+            setIsAuthReady(true);
+          });
       }
     });
     return () => unsubscribe();
@@ -2207,5 +2304,15 @@ export default function App() {
     );
   }
   
-  return <AppContent />;
+  return (
+    <>
+      {authError && (
+        <div className="fixed top-4 right-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700 p-4 rounded shadow-lg z-50 max-w-md">
+          <p className="font-bold">認証警告</p>
+          <p className="text-sm">{authError}</p>
+        </div>
+      )}
+      <AppContent />
+    </>
+  );
 }
