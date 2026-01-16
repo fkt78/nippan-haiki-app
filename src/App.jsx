@@ -978,6 +978,11 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
             };
         });
         
+        // 商品廃棄とオーナー値下げ8%の個別データ
+        const productWasteTotal = results.breakdown[0]; // waste_product
+        const owner8Total = results.breakdown[1]; // waste_owner_8
+        const productWasteAndOwner8Total = productWasteTotal + owner8Total;
+        
         return {
             doughnutData: {
                 labels: ['商品廃棄', 'オーナー値下げ8%', 'オーナー値下げ10%', '販促値下げ8%', '販促値下げ10%'],
@@ -986,7 +991,13 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
             summaryData: { 
                 total: results.total, 
                 average: results.total / dayCount,
-                productWasteAverage: results.breakdown[0] / dayCount
+                // 商品廃棄とオーナー値下げ8%の個別データ
+                productWasteTotal: productWasteTotal,
+                productWasteAverage: productWasteTotal / dayCount,
+                owner8Total: owner8Total,
+                owner8Average: owner8Total / dayCount,
+                productWasteAndOwner8Total: productWasteAndOwner8Total,
+                productWasteAndOwner8Average: productWasteAndOwner8Total / dayCount
             },
             lineChartData: { labels, datasets }
         };
@@ -1033,20 +1044,54 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
                 </ChartCard>
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="md:col-span-2 bg-white p-6 rounded-lg shadow"><h2 className="text-xl font-bold text-gray-800 mb-4">{filterStore || '全店舗'} の内訳</h2><div className="h-80"><Doughnut data={doughnutData} options={doughnutOptions}/></div></div>
-                    <div className="bg-white p-6 rounded-lg shadow flex flex-col justify-center text-center space-y-2">
-                        <div>
-                            <h3 className="text-lg font-semibold text-gray-500">選択期間の累計</h3>
-                            <p className="text-4xl font-bold text-red-600 my-1">¥{summaryData.total.toLocaleString()}</p>
-                        </div>
-                        <hr/>
-                        <div>
-                            <h3 className="text-lg font-semibold text-gray-500">1日あたりの廃棄・値下げ平均</h3>
-                            <p className="text-3xl font-bold text-red-500 mt-1">¥{summaryData.average.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
-                        </div>
-                        <hr/>
-                        <div>
-                            <h3 className="text-lg font-semibold text-gray-500">1日あたりの商品廃棄平均</h3>
-                            <p className="text-3xl font-bold text-orange-500 mt-1">¥{summaryData.productWasteAverage.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
+                    <div className="bg-white p-6 rounded-lg shadow">
+                        <div className="space-y-4">
+                            <div className="text-center pb-4 border-b">
+                                <h3 className="text-lg font-semibold text-gray-500 mb-2">選択期間の累計</h3>
+                                <p className="text-4xl font-bold text-red-600">¥{summaryData.total.toLocaleString()}</p>
+                            </div>
+                            
+                            {/* 商品廃棄とオーナー値下げ8%の詳細セクション */}
+                            <div className="space-y-3 pt-2">
+                                <h4 className="text-base font-bold text-gray-700 mb-3">商品廃棄・オーナー値下げ8%</h4>
+                                
+                                <div className="bg-red-50 p-3 rounded-lg">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-sm font-medium text-gray-600">商品廃棄</span>
+                                        <span className="text-lg font-bold text-red-600">¥{summaryData.productWasteTotal.toLocaleString()}</span>
+                                    </div>
+                                    <div className="text-xs text-gray-500 text-right">
+                                        1日平均: ¥{summaryData.productWasteAverage.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                                    </div>
+                                </div>
+                                
+                                <div className="bg-blue-50 p-3 rounded-lg">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-sm font-medium text-gray-600">オーナー値下げ8%</span>
+                                        <span className="text-lg font-bold text-blue-600">¥{summaryData.owner8Total.toLocaleString()}</span>
+                                    </div>
+                                    <div className="text-xs text-gray-500 text-right">
+                                        1日平均: ¥{summaryData.owner8Average.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                                    </div>
+                                </div>
+                                
+                                <div className="bg-purple-50 p-3 rounded-lg border-2 border-purple-300">
+                                    <div className="flex justify-between items-center mb-1">
+                                        <span className="text-sm font-bold text-gray-700">合計</span>
+                                        <span className="text-xl font-bold text-purple-700">¥{summaryData.productWasteAndOwner8Total.toLocaleString()}</span>
+                                    </div>
+                                    <div className="text-xs text-gray-600 text-right font-semibold">
+                                        1日平均: ¥{summaryData.productWasteAndOwner8Average.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div className="pt-2 border-t">
+                                <div className="text-center">
+                                    <h3 className="text-sm font-semibold text-gray-500 mb-1">1日あたりの全廃棄・値下げ平均</h3>
+                                    <p className="text-2xl font-bold text-red-500">¥{summaryData.average.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
