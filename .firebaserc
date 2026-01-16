@@ -1,0 +1,13 @@
+{
+  "projects": {},
+  "targets": {
+    "hattyuu-kanri-app-test": {
+      "hosting": {
+        "nippan-haiki-app": [
+          "nippan-haiki-app"
+        ]
+      }
+    }
+  },
+  "etags": {}
+}
