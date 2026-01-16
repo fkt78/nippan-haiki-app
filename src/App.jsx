@@ -1921,15 +1921,25 @@ const AiAnalysisPage = ({ dateRange, onRefresh }) => {
                     const listResponse = await fetch(listUrl);
                     if (listResponse.ok) {
                         const listResult = await listResponse.json();
-                        if (listResult.models) {
+                        if (listResult.models && Array.isArray(listResult.models)) {
                             availableModels = listResult.models
-                                .filter(m => m.name && m.supportedGenerationMethods?.includes('generateContent'))
-                                .map(m => m.name.replace('models/', ''));
-                            console.log('利用可能なモデル:', availableModels);
+                                .filter(m => m && m.name && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+                                .map(m => {
+                                    // モデル名から "models/" プレフィックスを削除
+                                    const modelName = m.name.replace(/^models\//, '');
+                                    return modelName;
+                                })
+                                .filter(name => name); // 空文字列を除外
+                            if (availableModels.length > 0) {
+                                console.log('利用可能なモデル:', availableModels);
+                            }
                         }
+                    } else {
+                        const errorResult = await listResponse.json().catch(() => ({}));
+                        console.warn('モデルリストの取得に失敗:', listResponse.status, errorResult);
                     }
                 } catch (listErr) {
-                    console.warn('モデルリストの取得に失敗:', listErr);
+                    console.warn('モデルリストの取得に失敗:', listErr.message || listErr);
                 }
                 
                 // 利用可能なモデルがある場合はそれを使用、なければデフォルトのリストを使用
@@ -1972,19 +1982,42 @@ const AiAnalysisPage = ({ dateRange, onRefresh }) => {
                                 body: JSON.stringify(payload)
                             });
                             
-                            const result = await response.json();
+                            // レスポンスが空でないことを確認
+                            let result;
+                            try {
+                                const responseText = await response.text();
+                                if (!responseText) {
+                                    throw new Error('Empty response');
+                                }
+                                result = JSON.parse(responseText);
+                            } catch (parseError) {
+                                console.log(`${version}/${modelName} response parse error:`, parseError.message);
+                                lastError = `レスポンスの解析に失敗: ${parseError.message}`;
+                                continue;
+                            }
                             
                             if (!response.ok || result.error) {
-                                const errorMsg = result.error?.message || `HTTP ${response.status}`;
+                                const errorMsg = result.error?.message || result.error?.code || `HTTP ${response.status}`;
                                 console.log(`${version}/${modelName} failed:`, errorMsg);
                                 lastError = errorMsg;
                                 continue;
                             }
                             
-                            if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
+                            // レスポンス構造を安全に確認
+                            if (result.candidates && 
+                                Array.isArray(result.candidates) && 
+                                result.candidates.length > 0 &&
+                                result.candidates[0]?.content?.parts &&
+                                Array.isArray(result.candidates[0].content.parts) &&
+                                result.candidates[0].content.parts.length > 0 &&
+                                result.candidates[0].content.parts[0]?.text) {
                                 aiResponse = result.candidates[0].content.parts[0].text;
                                 console.log(`✅ Successfully used: ${version}/${modelName}`);
                                 break; // 成功したらループを抜ける
+                            } else {
+                                console.log(`${version}/${modelName} unexpected response structure:`, result);
+                                lastError = '予期しないレスポンス形式';
+                                continue;
                             }
                         } catch (err) {
                             console.log(`${version}/${model} error:`, err.message);
