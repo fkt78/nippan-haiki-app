@@ -1771,6 +1771,120 @@ const AiAnalysisPage = ({ dateRange, onRefresh }) => {
         }
     };
 
+    // ローカルデータ分析関数
+    const analyzeDataLocally = (question, data) => {
+        const questionLower = question.toLowerCase();
+        
+        // データの基本統計を計算
+        const validReports = data.filter(r => r.sales && r.sales > 0);
+        if (validReports.length === 0) {
+            return "分析可能なデータがありません。期間を選択してデータを確認してください。";
+        }
+
+        const totalSales = validReports.reduce((sum, r) => sum + (r.sales || 0), 0);
+        const avgSales = totalSales / validReports.length;
+        const totalCustomers = validReports.reduce((sum, r) => sum + (r.customers || 0), 0);
+        const avgCustomers = totalCustomers / validReports.length;
+        const totalWaste = validReports.reduce((sum, r) => sum + (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0), 0);
+        const avgWaste = totalWaste / validReports.length;
+        const avgCustomerSpend = avgSales / avgCustomers || 0;
+
+        // 売上に関する質問
+        if (questionLower.includes('売上') || questionLower.includes('売り上げ')) {
+            const maxSales = Math.max(...validReports.map(r => r.sales || 0));
+            const minSales = Math.min(...validReports.map(r => r.sales || 0));
+            const maxSalesReport = validReports.find(r => r.sales === maxSales);
+            const minSalesReport = validReports.find(r => r.sales === minSales);
+            
+            if (questionLower.includes('高い') || questionLower.includes('最大') || questionLower.includes('最高')) {
+                return `最高売上は ${getLocalDateString(maxSalesReport.date.toDate())} の ${maxSalesReport.store} で ¥${maxSalesReport.sales.toLocaleString()} でした。\n客数: ${maxSalesReport.customers}人、客単価: ¥${Math.round((maxSalesReport.sales / maxSalesReport.customers) || 0).toLocaleString()}\n天気: ${maxSalesReport.weather ? `${maxSalesReport.weather.maxTemp}°C` : '情報なし'}`;
+            }
+            if (questionLower.includes('低い') || questionLower.includes('最小') || questionLower.includes('最低')) {
+                return `最低売上は ${getLocalDateString(minSalesReport.date.toDate())} の ${minSalesReport.store} で ¥${minSalesReport.sales.toLocaleString()} でした。\n客数: ${minSalesReport.customers}人、客単価: ¥${Math.round((minSalesReport.sales / minSalesReport.customers) || 0).toLocaleString()}\n天気: ${minSalesReport.weather ? `${minSalesReport.weather.maxTemp}°C` : '情報なし'}`;
+            }
+            if (questionLower.includes('平均')) {
+                return `選択期間の平均売上は ¥${Math.round(avgSales).toLocaleString()} です。\n最高: ¥${maxSales.toLocaleString()}、最低: ¥${minSales.toLocaleString()}`;
+            }
+            return `売上統計:\n平均: ¥${Math.round(avgSales).toLocaleString()}\n最高: ¥${maxSales.toLocaleString()} (${getLocalDateString(maxSalesReport.date.toDate())}, ${maxSalesReport.store})\n最低: ¥${minSales.toLocaleString()} (${getLocalDateString(minSalesReport.date.toDate())}, ${minSalesReport.store})`;
+        }
+
+        // 客数に関する質問
+        if (questionLower.includes('客数') || questionLower.includes('来店')) {
+            const maxCustomers = Math.max(...validReports.map(r => r.customers || 0));
+            const minCustomers = Math.min(...validReports.map(r => r.customers || 0));
+            const maxCustomersReport = validReports.find(r => r.customers === maxCustomers);
+            const minCustomersReport = validReports.find(r => r.customers === minCustomers);
+            
+            return `客数統計:\n平均: ${Math.round(avgCustomers)}人\n最高: ${maxCustomers}人 (${getLocalDateString(maxCustomersReport.date.toDate())}, ${maxCustomersReport.store})\n最低: ${minCustomers}人 (${getLocalDateString(minCustomersReport.date.toDate())}, ${minCustomersReport.store})`;
+        }
+
+        // 客単価に関する質問
+        if (questionLower.includes('客単価') || questionLower.includes('単価')) {
+            const customerSpends = validReports.map(r => (r.sales || 0) / (r.customers || 1));
+            const maxSpend = Math.max(...customerSpends);
+            const minSpend = Math.min(...customerSpends);
+            const maxSpendReport = validReports[customerSpends.indexOf(maxSpend)];
+            const minSpendReport = validReports[customerSpends.indexOf(minSpend)];
+            
+            return `客単価統計:\n平均: ¥${Math.round(avgCustomerSpend).toLocaleString()}\n最高: ¥${Math.round(maxSpend).toLocaleString()} (${getLocalDateString(maxSpendReport.date.toDate())}, ${maxSpendReport.store})\n最低: ¥${Math.round(minSpend).toLocaleString()} (${getLocalDateString(minSpendReport.date.toDate())}, ${minSpendReport.store})`;
+        }
+
+        // 廃棄に関する質問
+        if (questionLower.includes('廃棄') || questionLower.includes('ロス') || questionLower.includes('値下げ')) {
+            const wasteByType = {
+                product: validReports.reduce((sum, r) => sum + (r.waste_product || 0), 0),
+                owner8: validReports.reduce((sum, r) => sum + (r.waste_owner_8 || 0), 0),
+                owner10: validReports.reduce((sum, r) => sum + (r.waste_owner_10 || 0), 0),
+                promo8: validReports.reduce((sum, r) => sum + (r.waste_promo_8 || 0), 0),
+                promo10: validReports.reduce((sum, r) => sum + (r.waste_promo_10 || 0), 0)
+            };
+            
+            const maxWaste = Math.max(...validReports.map(r => (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)));
+            const maxWasteReport = validReports.find(r => ((r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)) === maxWaste);
+            
+            return `廃棄・値下げ統計:\n合計: ¥${Math.round(totalWaste).toLocaleString()}\n平均: ¥${Math.round(avgWaste).toLocaleString()}\n内訳:\n- 商品廃棄: ¥${Math.round(wasteByType.product).toLocaleString()}\n- オーナー値下げ8%: ¥${Math.round(wasteByType.owner8).toLocaleString()}\n- オーナー値下げ10%: ¥${Math.round(wasteByType.owner10).toLocaleString()}\n- 販促値下げ8%: ¥${Math.round(wasteByType.promo8).toLocaleString()}\n- 販促値下げ10%: ¥${Math.round(wasteByType.promo10).toLocaleString()}\n\n最高廃棄日: ${getLocalDateString(maxWasteReport.date.toDate())} (${maxWasteReport.store}) - ¥${maxWaste.toLocaleString()}`;
+        }
+
+        // 店舗に関する質問
+        if (questionLower.includes('店舗') || questionLower.includes('店')) {
+            const storeStats = {};
+            validReports.forEach(r => {
+                if (!storeStats[r.store]) {
+                    storeStats[r.store] = { sales: 0, customers: 0, waste: 0, count: 0 };
+                }
+                storeStats[r.store].sales += r.sales || 0;
+                storeStats[r.store].customers += r.customers || 0;
+                storeStats[r.store].waste += (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0);
+                storeStats[r.store].count += 1;
+            });
+            
+            const storeList = Object.entries(storeStats).map(([store, stats]) => ({
+                store,
+                avgSales: stats.sales / stats.count,
+                avgCustomers: stats.customers / stats.count,
+                avgWaste: stats.waste / stats.count
+            })).sort((a, b) => b.avgSales - a.avgSales);
+            
+            return `店舗別統計:\n${storeList.map(s => `${s.store}: 平均売上 ¥${Math.round(s.avgSales).toLocaleString()}, 平均客数 ${Math.round(s.avgCustomers)}人, 平均廃棄 ¥${Math.round(s.avgWaste).toLocaleString()}`).join('\n')}`;
+        }
+
+        // 天気に関する質問
+        if (questionLower.includes('天気') || questionLower.includes('気温') || questionLower.includes('雨')) {
+            const weatherReports = validReports.filter(r => r.weather);
+            if (weatherReports.length === 0) {
+                return "天気データがありません。";
+            }
+            const avgTemp = weatherReports.reduce((sum, r) => sum + (r.weather.maxTemp || 0), 0) / weatherReports.length;
+            const maxTemp = Math.max(...weatherReports.map(r => r.weather.maxTemp || 0));
+            const minTemp = Math.min(...weatherReports.map(r => r.weather.maxTemp || 0));
+            
+            return `天気統計:\n平均気温: ${Math.round(avgTemp)}°C\n最高気温: ${maxTemp}°C\n最低気温: ${minTemp}°C`;
+        }
+
+        // デフォルト: 基本統計を返す
+        return `選択期間の基本統計:\n\n📊 売上\n平均: ¥${Math.round(avgSales).toLocaleString()}\n合計: ¥${Math.round(totalSales).toLocaleString()}\n\n👥 客数\n平均: ${Math.round(avgCustomers)}人\n合計: ${Math.round(totalCustomers)}人\n\n💰 客単価\n平均: ¥${Math.round(avgCustomerSpend).toLocaleString()}\n\n🗑️ 廃棄・値下げ\n合計: ¥${Math.round(totalWaste).toLocaleString()}\n平均: ¥${Math.round(avgWaste).toLocaleString()}\n\nデータ件数: ${validReports.length}件\n\nより詳しい情報を知りたい場合は、「売上が高い日は？」「廃棄が多い店舗は？」など具体的に質問してください。`;
+    };
+
     const handleSendMessage = async () => {
         if (!userInput.trim()) return;
 
@@ -1779,35 +1893,141 @@ const AiAnalysisPage = ({ dateRange, onRefresh }) => {
         setUserInput('');
         setIsAiLoading(true);
 
+        // データサマリーを作成
         const dataSummary = reports.map(r => {
             const reportDate = r.date ? getLocalDateString(r.date.toDate()) : '日付不明';
-            return `日付: ${reportDate}, 店舗: ${r.store}, 売上: ${r.sales}円, 客数: ${r.customers}人, 廃棄合計: ${(r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)}円, 天気: ${r.weather ? `${getWeatherIcon(r.weather.weatherCode)} ${r.weather.maxTemp}°C` : '情報なし'}`;
+            const wasteTotal = (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0);
+            const customerSpend = (r.sales && r.customers) ? Math.round(r.sales / r.customers) : 0;
+            return `日付: ${reportDate}, 店舗: ${r.store}, 売上: ${r.sales || 0}円, 客数: ${r.customers || 0}人, 客単価: ${customerSpend}円, 商品廃棄: ${r.waste_product || 0}円, オーナー値下げ8%: ${r.waste_owner_8 || 0}円, オーナー値下げ10%: ${r.waste_owner_10 || 0}円, 販促値下げ8%: ${r.waste_promo_8 || 0}円, 販促値下げ10%: ${r.waste_promo_10 || 0}円, 廃棄合計: ${wasteTotal}円, 天気: ${r.weather ? `${r.weather.maxTemp}°C, 降水量: ${r.weather.precipitation}mm` : '情報なし'}`;
         }).join('\n');
 
-        const prompt = `あなたは優秀なコンビニ経営コンサルタントです。以下のデータを基に、ユーザーの質問に対して具体的で実行可能なアドバイスをしてください。\n\nデータ:\n${dataSummary}\n\nユーザーの質問:\n${userInput}`;
+        // APIキーを環境変数から取得
+        const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
         
-        try {
-            const apiKey = ""; 
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-            const payload = { contents: [{ parts: [{ text: prompt }] }] };
-            
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const result = await response.json();
-            
-            let aiResponse = "申し訳ありません、分析結果を取得できませんでした。";
-            if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
-                aiResponse = result.candidates[0].content.parts[0].text;
+        // デバッグ用（開発時のみ）
+        if (import.meta.env.DEV) {
+            console.log('API Key loaded:', apiKey ? 'Yes' : 'No');
+        }
+
+        if (apiKey) {
+            // Gemini APIを使用
+            try {
+                const prompt = `あなたは優秀なコンビニ経営コンサルタントです。以下のデータを基に、ユーザーの質問に対して具体的で実行可能なアドバイスを日本語で回答してください。データの数値を正確に引用し、分析結果を分かりやすく説明してください。\n\nデータ:\n${dataSummary}\n\nユーザーの質問:\n${userInput}`;
+                
+                // まず利用可能なモデルを確認
+                let availableModels = [];
+                try {
+                    const listUrl = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
+                    const listResponse = await fetch(listUrl);
+                    if (listResponse.ok) {
+                        const listResult = await listResponse.json();
+                        if (listResult.models) {
+                            availableModels = listResult.models
+                                .filter(m => m.name && m.supportedGenerationMethods?.includes('generateContent'))
+                                .map(m => m.name.replace('models/', ''));
+                            console.log('利用可能なモデル:', availableModels);
+                        }
+                    }
+                } catch (listErr) {
+                    console.warn('モデルリストの取得に失敗:', listErr);
+                }
+                
+                // 利用可能なモデルがある場合はそれを使用、なければデフォルトのリストを使用
+                const modelsToTry = availableModels.length > 0 
+                    ? availableModels 
+                    : [
+                        'gemini-1.5-flash',
+                        'gemini-1.5-pro',
+                        'gemini-pro',
+                        'models/gemini-1.5-flash',
+                        'models/gemini-1.5-pro',
+                        'models/gemini-pro'
+                    ];
+                
+                let lastError = null;
+                let aiResponse = null;
+                const apiVersions = ['v1', 'v1beta'];
+                
+                // 各APIバージョンとモデルの組み合わせを試す
+                for (const version of apiVersions) {
+                    for (const model of modelsToTry) {
+                        try {
+                            // モデル名に "models/" が含まれている場合はそのまま、なければ追加
+                            const modelName = model.startsWith('models/') ? model : `models/${model}`;
+                            const apiUrl = `https://generativelanguage.googleapis.com/${version}/${modelName}:generateContent?key=${apiKey}`;
+                            
+                            const payload = { 
+                                contents: [{ parts: [{ text: prompt }] }],
+                                generationConfig: {
+                                    temperature: 0.7,
+                                    topK: 40,
+                                    topP: 0.95,
+                                    maxOutputTokens: 2048,
+                                }
+                            };
+                            
+                            const response = await fetch(apiUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload)
+                            });
+                            
+                            const result = await response.json();
+                            
+                            if (!response.ok || result.error) {
+                                const errorMsg = result.error?.message || `HTTP ${response.status}`;
+                                console.log(`${version}/${modelName} failed:`, errorMsg);
+                                lastError = errorMsg;
+                                continue;
+                            }
+                            
+                            if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
+                                aiResponse = result.candidates[0].content.parts[0].text;
+                                console.log(`✅ Successfully used: ${version}/${modelName}`);
+                                break; // 成功したらループを抜ける
+                            }
+                        } catch (err) {
+                            console.log(`${version}/${model} error:`, err.message);
+                            lastError = err.message;
+                            continue;
+                        }
+                    }
+                    if (aiResponse) break; // 成功したら外側のループも抜ける
+                }
+                
+                if (!aiResponse) {
+                    // 詳細なエラーメッセージを作成
+                    const errorDetails = `API呼び出しに失敗しました。\n\n考えられる原因:\n1. APIキーが無効または権限が不足しています\n2. Google CloudプロジェクトでGemini APIが有効化されていません\n3. 請求（Billing）設定が完了していません\n4. APIキーに適切なIAMロールが付与されていません\n\nエラー詳細: ${lastError || '不明なエラー'}\n\n対処方法:\n1. Google Cloud Console (https://console.cloud.google.com/) にアクセス\n2. APIとサービス > 有効なAPI で「Generative Language API」が有効か確認\n3. 請求アカウントがプロジェクトに紐づいているか確認\n4. APIキーの制限設定を確認（IPアドレスやHTTPリファラー制限など）`;
+                    throw new Error(errorDetails);
+                }
+                
+                // 成功した場合はレスポンスを設定
+                setMessages([...newMessages, { role: 'ai', text: aiResponse }]);
+            } catch (error) {
+                console.error("AI分析に失敗しました:", error);
+                // APIエラーの場合はローカル分析にフォールバック
+                try {
+                    const analysisResult = analyzeDataLocally(userInput, reports);
+                    setMessages([...newMessages, { role: 'ai', text: `[APIエラーのため簡易分析]\n\nエラー詳細: ${error.message}\n\n${analysisResult}` }]);
+                } catch (fallbackError) {
+                    setMessages([...newMessages, { role: 'ai', text: `分析中にエラーが発生しました。\nエラー: ${error.message}\n\nAPIキーの設定とブラウザのコンソールを確認してください。` }]);
+                }
+            } finally {
+                setIsAiLoading(false);
             }
-            setMessages([...newMessages, { role: 'ai', text: aiResponse }]);
-        } catch (error) {
-            console.error("AI分析に失敗しました:", error);
-            setMessages([...newMessages, { role: 'ai', text: "分析中にエラーが発生しました。" }]);
-        } finally {
-            setIsAiLoading(false);
+        } else {
+            // APIキーがない場合はローカル分析を使用
+            setTimeout(() => {
+                try {
+                    const analysisResult = analyzeDataLocally(userInput, reports);
+                    setMessages([...newMessages, { role: 'ai', text: `[簡易分析モード]\n\n${analysisResult}\n\n※より詳細な分析にはGemini APIキーの設定が必要です。` }]);
+                } catch (error) {
+                    console.error("データ分析に失敗しました:", error);
+                    setMessages([...newMessages, { role: 'ai', text: "分析中にエラーが発生しました。もう一度お試しください。" }]);
+                } finally {
+                    setIsAiLoading(false);
+                }
+            }, 500);
         }
     };
 
