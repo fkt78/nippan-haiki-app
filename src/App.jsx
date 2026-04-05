@@ -123,39 +123,25 @@ const useReports = (startDate, endDate, trigger) => {
         return onAuthStateChanged(auth, setUser);
     }, []);
 
-    const fetchReports = async () => {
+    useEffect(() => {
         if (!user || !startDate || !endDate || startDate > endDate) {
             setData([]);
+            setIsLoading(false);
             return;
         }
         setIsLoading(true);
-        try {
-            const startTimestamp = Timestamp.fromDate(startDate);
-            const endTimestamp = Timestamp.fromDate(endDate);
-            const q = query(collection(db, dailyReportsPath), where("date", ">=", startTimestamp), where("date", "<=", endTimestamp));
-            
-            // Use onSnapshot for daily reports to reflect changes immediately without manual refresh
-            const unsubscribe = onSnapshot(q, (querySnapshot) => {
-                const fetchedData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setData(fetchedData);
-                setIsLoading(false);
-            }, (error) => {
-                console.error("レポートの取得中にエラーが発生しました: ", error);
-                setIsLoading(false);
-            });
-            
-            return unsubscribe;
-        } catch (error) {
-            console.error("レポートの取得設定中にエラーが発生しました: ", error);
-            setData([]);
+        const startTimestamp = Timestamp.fromDate(startDate);
+        const endTimestamp = Timestamp.fromDate(endDate);
+        const q = query(collection(db, dailyReportsPath), where("date", ">=", startTimestamp), where("date", "<=", endTimestamp));
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+            const fetchedData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            setData(fetchedData);
             setIsLoading(false);
-        }
-    };
-
-    useEffect(() => {
-        let unsubscribe;
-        fetchReports().then(unsub => unsubscribe = unsub);
-        return () => { if(unsubscribe) unsubscribe(); };
+        }, (error) => {
+            console.error("レポートの取得中にエラーが発生しました: ", error);
+            setIsLoading(false);
+        });
+        return () => unsubscribe();
     }, [startDate, endDate, trigger, user]);
 
     return { data, isLoading };
