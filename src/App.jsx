@@ -907,8 +907,22 @@ const NippoDashboard = ({ stores, dateRange, onRefresh }) => {
     );
 };
 
+const HAIKI_WASTE_FIELDS = [
+    { key: 'waste_product', lyKey: 'waste_product_ly', label: '商品廃棄', color: 'rgba(255, 99, 132, 1)' },
+    { key: 'waste_owner_8', lyKey: 'waste_owner_8_ly', label: 'オーナー値下げ8%', color: 'rgba(54, 162, 235, 1)' },
+    { key: 'waste_owner_10', lyKey: 'waste_owner_10_ly', label: 'オーナー値下げ10%', color: 'rgba(255, 206, 86, 1)' },
+    { key: 'waste_promo_8', lyKey: 'waste_promo_8_ly', label: '販促値下げ8%', color: 'rgba(75, 192, 192, 1)' },
+    { key: 'waste_promo_10', lyKey: 'waste_promo_10_ly', label: '販促値下げ10%', color: 'rgba(153, 102, 255, 1)' },
+];
+
+const sumHaikiWaste = (report, useLy = false) => {
+    if (!report) return 0;
+    return HAIKI_WASTE_FIELDS.reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
+};
+
 const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
-    const { data: reports, isLoading } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
+    const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
+    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
     const [filterStore, setFilterStore] = useState('');
     
     useEffect(() => {
@@ -917,17 +931,47 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         }
     }, [stores, filterStore]);
 
-    const { doughnutData, summaryData, lineChartData } = useMemo(() => {
-        const filteredReports = filterStore ? reports.filter(r => r.store === filterStore) : reports;
+    const combinedReports = useMemo(() => {
+        const lyData = reportsLY.map(r => {
+            if (!r.date) return null;
+            const lyDate = r.date.toDate();
+            const cyDate = new Date(lyDate.getFullYear() + 1, lyDate.getMonth(), lyDate.getDate());
+            return {
+                date: Timestamp.fromDate(cyDate),
+                store: r.store,
+                waste_product_ly: r.waste_product,
+                waste_owner_8_ly: r.waste_owner_8,
+                waste_owner_10_ly: r.waste_owner_10,
+                waste_promo_8_ly: r.waste_promo_8,
+                waste_promo_10_ly: r.waste_promo_10,
+            };
+        }).filter(Boolean);
+
+        const reportsById = new Map();
+        reports.forEach(r => reportsById.set(r.id, r));
+        lyData.forEach(r_ly => {
+            const cyDateStr = getLocalDateString(r_ly.date.toDate());
+            const docId = `${cyDateStr}_${r_ly.store}`;
+            const existingReport = reportsById.get(docId) || { id: docId, date: r_ly.date, store: r_ly.store };
+            reportsById.set(docId, { ...existingReport, ...r_ly });
+        });
+
+        return Array.from(reportsById.values());
+    }, [reports, reportsLY]);
+
+    const { doughnutData, summaryData, totalWasteChartData, itemLineChartData } = useMemo(() => {
+        const filteredReports = filterStore ? combinedReports.filter(r => r.store === filterStore) : combinedReports;
         
-        const results = { total: 0, breakdown: [0, 0, 0, 0, 0] };
-        const wasteFields = ['waste_product', 'waste_owner_8', 'waste_owner_10', 'waste_promo_8', 'waste_promo_10'];
+        const results = { total: 0, totalLy: 0, breakdown: [0, 0, 0, 0, 0], breakdownLy: [0, 0, 0, 0, 0] };
         
         filteredReports.forEach(report => {
-            wasteFields.forEach((field, index) => {
-                const value = report[field] || 0;
+            HAIKI_WASTE_FIELDS.forEach((field, index) => {
+                const value = report[field.key] || 0;
+                const valueLy = report[field.lyKey] || 0;
                 results.breakdown[index] += value;
+                results.breakdownLy[index] += valueLy;
                 results.total += value;
+                results.totalLy += valueLy;
             });
         });
         
@@ -942,33 +986,59 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
             }
         }
 
-        const wasteItems = [
-            { key: 'waste_product', label: '商品廃棄', color: 'rgba(255, 99, 132, 1)' },
-            { key: 'waste_owner_8', label: 'オーナー値下げ8%', color: 'rgba(54, 162, 235, 1)' },
-            { key: 'waste_owner_10', label: 'オーナー値下げ10%', color: 'rgba(255, 206, 86, 1)' },
-            { key: 'waste_promo_8', label: '販促値下げ8%', color: 'rgba(75, 192, 192, 1)' },
-            { key: 'waste_promo_10', label: '販促値下げ10%', color: 'rgba(153, 102, 255, 1)' }
-        ];
-
-        const datasets = wasteItems.map(item => {
-            const data = labels.map(labelDate => {
-                const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === labelDate);
-                return reportsForDay.reduce((sum, r) => sum + (r[item.key] || 0), 0);
-            });
-            return {
-                label: item.label,
-                data,
-                borderColor: item.color,
-                backgroundColor: item.color.replace('1)', '0.2)'),
-                fill: false,
-                tension: 0.1,
-            };
+        const storeColors = {};
+        const baseColors = ['rgba(54, 162, 235, 1)', 'rgba(255, 99, 132, 1)', 'rgba(75, 192, 192, 1)', 'rgba(153, 102, 255, 1)', 'rgba(255, 159, 64, 1)'];
+        stores.forEach((store, index) => {
+            storeColors[store.name] = baseColors[index % baseColors.length];
         });
+
+        const totalWasteChartData = {
+            labels,
+            datasets: stores.flatMap(store => {
+                const storeData = new Array(labels.length).fill(null);
+                const storeDataLy = new Array(labels.length).fill(null);
+
+                combinedReports.filter(r => r.store === store.name).forEach(r => {
+                    if (!r.date) return;
+                    const reportDateStr = getLocalDateString(r.date.toDate());
+                    const index = labels.indexOf(reportDateStr);
+                    if (index !== -1) {
+                        storeData[index] = sumHaikiWaste(r, false);
+                        storeDataLy[index] = sumHaikiWaste(r, true);
+                    }
+                });
+
+                return [
+                    { label: `${store.name} (本年)`, data: storeData, borderColor: storeColors[store.name], backgroundColor: storeColors[store.name].replace('1)', '0.1)'), fill: true, tension: 0.1 },
+                    { label: `${store.name} (前年)`, data: storeDataLy, borderColor: storeColors[store.name], borderDash: [5, 5], fill: false, tension: 0.1 },
+                ];
+            }),
+        };
+
+        const itemLineChartData = {
+            labels,
+            datasets: HAIKI_WASTE_FIELDS.flatMap(item => {
+                const cyData = labels.map(labelDate => {
+                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === labelDate);
+                    return reportsForDay.reduce((sum, r) => sum + (r[item.key] || 0), 0);
+                });
+                const lyData = labels.map(labelDate => {
+                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === labelDate);
+                    return reportsForDay.reduce((sum, r) => sum + (r[item.lyKey] || 0), 0);
+                });
+                return [
+                    { label: `${item.label} (本年)`, data: cyData, borderColor: item.color, backgroundColor: item.color.replace('1)', '0.15)'), fill: false, tension: 0.1 },
+                    { label: `${item.label} (前年)`, data: lyData, borderColor: item.color, borderDash: [5, 5], fill: false, tension: 0.1 },
+                ];
+            }),
+        };
         
-        // 商品廃棄とオーナー値下げ8%の個別データ
-        const productWasteTotal = results.breakdown[0]; // waste_product
-        const owner8Total = results.breakdown[1]; // waste_owner_8
+        const productWasteTotal = results.breakdown[0];
+        const owner8Total = results.breakdown[1];
+        const productWasteTotalLy = results.breakdownLy[0];
+        const owner8TotalLy = results.breakdownLy[1];
         const productWasteAndOwner8Total = productWasteTotal + owner8Total;
+        const productWasteAndOwner8TotalLy = productWasteTotalLy + owner8TotalLy;
         
         return {
             doughnutData: {
@@ -976,19 +1046,29 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
                 datasets: [{ label: '廃棄・値下げ内訳', data: results.breakdown, backgroundColor: ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF'] }],
             },
             summaryData: { 
-                total: results.total, 
+                total: results.total,
+                totalLy: results.totalLy,
                 average: results.total / dayCount,
-                // 商品廃棄とオーナー値下げ8%の個別データ
-                productWasteTotal: productWasteTotal,
+                averageLy: results.totalLy / dayCount,
+                yoyDiff: results.total - results.totalLy,
+                yoyRatio: results.totalLy > 0 ? ((results.total / results.totalLy) * 100) : null,
+                productWasteTotal,
+                productWasteTotalLy,
                 productWasteAverage: productWasteTotal / dayCount,
-                owner8Total: owner8Total,
+                productWasteAverageLy: productWasteTotalLy / dayCount,
+                owner8Total,
+                owner8TotalLy,
                 owner8Average: owner8Total / dayCount,
-                productWasteAndOwner8Total: productWasteAndOwner8Total,
-                productWasteAndOwner8Average: productWasteAndOwner8Total / dayCount
+                owner8AverageLy: owner8TotalLy / dayCount,
+                productWasteAndOwner8Total,
+                productWasteAndOwner8TotalLy,
+                productWasteAndOwner8Average: productWasteAndOwner8Total / dayCount,
+                productWasteAndOwner8AverageLy: productWasteAndOwner8TotalLy / dayCount,
             },
-            lineChartData: { labels, datasets }
+            totalWasteChartData,
+            itemLineChartData,
         };
-    }, [reports, filterStore, dateRange]);
+    }, [combinedReports, filterStore, dateRange, stores]);
 
     const doughnutOptions = {
         responsive: true, maintainAspectRatio: false,
@@ -1008,7 +1088,27 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         }
     };
 
-    if (isLoading) {
+    const lineChartOptions = {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { position: 'top' } },
+        scales: {
+            y: {
+                ticks: {
+                    callback: (value) => `¥${Number(value).toLocaleString()}`,
+                },
+            },
+        },
+    };
+
+    const renderYoYSummaryRow = (cyValue, lyValue, cyAverage, lyAverage) => (
+        <div className="text-xs text-gray-500 space-y-0.5 text-right">
+            <div>前年: ¥{Math.round(lyValue).toLocaleString()}</div>
+            <div>1日平均 本年 ¥{Math.round(cyAverage).toLocaleString(undefined, { maximumFractionDigits: 0 })} / 前年 ¥{Math.round(lyAverage).toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+        </div>
+    );
+
+    if (isLoadingReports || isLoadingReportsLY) {
         return (
             <div className="flex justify-center items-center h-full">
                 <div className="text-center">
@@ -1021,54 +1121,62 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
 
     return (
         <div>
-            <h1 className="text-3xl font-bold text-gray-800 mb-6">廃棄・値下げ分析</h1>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">廃棄・値下げ分析（前年比較）</h1>
+            <p className="text-sm text-gray-500 mb-6">実線＝本年、破線＝前年</p>
             <div className="flex flex-wrap justify-center gap-2 mb-6">
-                {stores.map(s => (<button key={s.id} onClick={() => setFilterStore(s.name)} className={`px-3 py-2 text-sm rounded-lg ${filterStore === s.name ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>{s.name}</button>))}
+                {stores.map(s => (<button key={s.id} onClick={() => setFilterStore(s.name)} className={`px-3 py-2 text-sm rounded-lg transition-all ${filterStore === s.name ? 'bg-blue-600 text-white shadow' : 'bg-gray-200 hover:bg-gray-300'}`}>{s.name}</button>))}
             </div>
             <div className="grid grid-cols-1 gap-8">
-                <ChartCard title={`${filterStore || '全店舗'} 廃棄・値下げ項目別推移`}>
-                    <Line data={lineChartData} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } } }}/>
+                <ChartCard title="廃棄・値下げ合計推移（店舗別・前年比較）">
+                    <Line data={totalWasteChartData} options={lineChartOptions} />
+                </ChartCard>
+                <ChartCard title={`${filterStore || '全店舗'} 廃棄・値下げ項目別推移（前年比較）`}>
+                    <Line data={itemLineChartData} options={lineChartOptions} />
                 </ChartCard>
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                    <div className="md:col-span-2 bg-white p-6 rounded-lg shadow"><h2 className="text-xl font-bold text-gray-800 mb-4">{filterStore || '全店舗'} の内訳</h2><div className="h-80"><Doughnut data={doughnutData} options={doughnutOptions}/></div></div>
+                    <div className="md:col-span-2 bg-white p-6 rounded-lg shadow"><h2 className="text-xl font-bold text-gray-800 mb-4">{filterStore || '全店舗'} の内訳（本年）</h2><div className="h-80"><Doughnut data={doughnutData} options={doughnutOptions}/></div></div>
                     <div className="bg-white p-6 rounded-lg shadow">
                         <div className="space-y-4">
                             <div className="text-center pb-4 border-b">
                                 <h3 className="text-lg font-semibold text-gray-500 mb-2">選択期間の累計</h3>
                                 <p className="text-4xl font-bold text-red-600">¥{summaryData.total.toLocaleString()}</p>
+                                <p className="text-sm text-gray-500 mt-2">前年: ¥{summaryData.totalLy.toLocaleString()}</p>
+                                <p className={`text-sm font-semibold mt-1 ${summaryData.yoyDiff > 0 ? 'text-red-600' : summaryData.yoyDiff < 0 ? 'text-green-600' : 'text-gray-600'}`}>
+                                    前年差 {summaryData.yoyDiff >= 0 ? '+' : ''}¥{Math.round(summaryData.yoyDiff).toLocaleString()}
+                                    {summaryData.yoyRatio != null && `（${summaryData.yoyRatio.toFixed(1)}%）`}
+                                </p>
                             </div>
                             
-                            {/* 商品廃棄とオーナー値下げ8%の詳細セクション */}
                             <div className="space-y-3 pt-2">
                                 <h4 className="text-base font-bold text-gray-700 mb-3">商品廃棄・オーナー値下げ8%</h4>
                                 
                                 <div className="bg-red-50 p-3 rounded-lg">
-                                    <div className="flex justify-between items-center mb-1">
+                                    <div className="flex justify-between items-start mb-1 gap-2">
                                         <span className="text-sm font-medium text-gray-600">商品廃棄</span>
-                                        <span className="text-lg font-bold text-red-600">¥{summaryData.productWasteTotal.toLocaleString()}</span>
-                                    </div>
-                                    <div className="text-xs text-gray-500 text-right">
-                                        1日平均: ¥{summaryData.productWasteAverage.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                                        <div className="text-right">
+                                            <span className="text-lg font-bold text-red-600">¥{summaryData.productWasteTotal.toLocaleString()}</span>
+                                            {renderYoYSummaryRow(summaryData.productWasteTotal, summaryData.productWasteTotalLy, summaryData.productWasteAverage, summaryData.productWasteAverageLy)}
+                                        </div>
                                     </div>
                                 </div>
                                 
                                 <div className="bg-blue-50 p-3 rounded-lg">
-                                    <div className="flex justify-between items-center mb-1">
+                                    <div className="flex justify-between items-start mb-1 gap-2">
                                         <span className="text-sm font-medium text-gray-600">オーナー値下げ8%</span>
-                                        <span className="text-lg font-bold text-blue-600">¥{summaryData.owner8Total.toLocaleString()}</span>
-                                    </div>
-                                    <div className="text-xs text-gray-500 text-right">
-                                        1日平均: ¥{summaryData.owner8Average.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                                        <div className="text-right">
+                                            <span className="text-lg font-bold text-blue-600">¥{summaryData.owner8Total.toLocaleString()}</span>
+                                            {renderYoYSummaryRow(summaryData.owner8Total, summaryData.owner8TotalLy, summaryData.owner8Average, summaryData.owner8AverageLy)}
+                                        </div>
                                     </div>
                                 </div>
                                 
                                 <div className="bg-purple-50 p-3 rounded-lg border-2 border-purple-300">
-                                    <div className="flex justify-between items-center mb-1">
+                                    <div className="flex justify-between items-start mb-1 gap-2">
                                         <span className="text-sm font-bold text-gray-700">合計</span>
-                                        <span className="text-xl font-bold text-purple-700">¥{summaryData.productWasteAndOwner8Total.toLocaleString()}</span>
-                                    </div>
-                                    <div className="text-xs text-gray-600 text-right font-semibold">
-                                        1日平均: ¥{summaryData.productWasteAndOwner8Average.toLocaleString(undefined, {maximumFractionDigits: 0})}
+                                        <div className="text-right">
+                                            <span className="text-xl font-bold text-purple-700">¥{summaryData.productWasteAndOwner8Total.toLocaleString()}</span>
+                                            {renderYoYSummaryRow(summaryData.productWasteAndOwner8Total, summaryData.productWasteAndOwner8TotalLy, summaryData.productWasteAndOwner8Average, summaryData.productWasteAndOwner8AverageLy)}
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -1077,6 +1185,7 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
                                 <div className="text-center">
                                     <h3 className="text-sm font-semibold text-gray-500 mb-1">1日あたりの全廃棄・値下げ平均</h3>
                                     <p className="text-2xl font-bold text-red-500">¥{summaryData.average.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
+                                    <p className="text-sm text-gray-500 mt-1">前年: ¥{summaryData.averageLy.toLocaleString(undefined, {maximumFractionDigits: 0})}</p>
                                 </div>
                             </div>
                         </div>
