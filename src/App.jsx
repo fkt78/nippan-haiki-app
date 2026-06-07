@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { APP_VERSION, BUILD_TIME, formatBuildTime } from './version.js';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, writeBatch, onSnapshot, query, where, Timestamp, limit } from 'firebase/firestore';
@@ -1137,17 +1138,61 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
 
     return(
         <div>
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex justify-between items-center mb-4">
                 <h1 className="text-3xl font-bold text-gray-800">データ一覧</h1>
                 <div className="flex space-x-2 p-1 bg-gray-200 rounded-lg">
                     <button onClick={() => setView('nippo')} className={`px-4 py-2 text-sm font-semibold rounded-md ${view === 'nippo' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>日販データ</button>
                     <button onClick={() => setView('haiki')} className={`px-4 py-2 text-sm font-semibold rounded-md ${view === 'haiki' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>廃棄データ</button>
                 </div>
             </div>
+            <p className="mb-4 text-xs text-gray-500 flex items-center gap-4">
+                <span><span className="font-semibold text-gray-800">太字</span>＝本年</span>
+                <span className="inline-flex items-center gap-1">
+                    <span className="inline-block w-8 h-4 rounded border border-gray-200" style={lyColumnHatchStyle}></span>
+                    ＝前年
+                </span>
+            </p>
             {view === 'nippo' ? <NippoTable reports={combinedReports} stores={stores} /> : <HaikiTable reports={combinedReports} stores={stores} dateRange={dateRange} />}
         </div>
     );
 }
+
+const lyColumnHatchStyle = {
+    backgroundImage: 'repeating-linear-gradient(-45deg, rgba(241,245,249,1) 0px, rgba(241,245,249,1) 4px, rgba(203,213,225,0.45) 4px, rgba(203,213,225,0.45) 8px)',
+};
+
+const formatTableValue = (value, prefix = '') => (
+    value != null && isFinite(value) ? `${prefix}${Math.round(value).toLocaleString()}` : '-'
+);
+
+const YoYTableHeader = ({ label, isPriorYear, className = '' }) => (
+    isPriorYear ? (
+        <th className={`px-2 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider bg-slate-100 ${className}`} style={lyColumnHatchStyle}>
+            {label}
+        </th>
+    ) : (
+        <th className={`px-2 py-3 text-right text-xs font-bold text-gray-800 uppercase tracking-wider border-l border-gray-200 ${className}`}>
+            {label}
+        </th>
+    )
+);
+
+const YoYTableCell = ({ value, isPriorYear, prefix = '', isFooter = false }) => {
+    const display = formatTableValue(value, prefix);
+    const padding = isFooter ? 'py-3' : 'py-2';
+    if (isPriorYear) {
+        return (
+            <td className={`px-2 ${padding} whitespace-nowrap text-sm font-normal text-gray-500 text-right bg-slate-100`} style={lyColumnHatchStyle}>
+                {display}
+            </td>
+        );
+    }
+    return (
+        <td className={`px-2 ${padding} whitespace-nowrap text-sm ${isFooter ? 'font-bold text-gray-900' : 'font-semibold text-gray-800'} text-right`}>
+            {display}
+        </td>
+    );
+};
 
 const NippoTable = ({ reports, stores }) => {
     const { tableData, grandTotal, grandAverage } = useMemo(() => {
@@ -1239,8 +1284,26 @@ const NippoTable = ({ reports, stores }) => {
 
         return { tableData: sortedData, grandTotal, grandAverage };
     }, [reports, stores]);
-    
-    const renderCell = (value, prefix = '') => (<td className="px-2 py-4 whitespace-nowrap text-sm text-gray-600 text-right">{value != null && isFinite(value) ? `${prefix}${Math.round(value).toLocaleString()}` : '-'}</td>);
+
+    const nippoMetrics = [
+        { cyKey: 'sales', lyKey: 'sales_ly', cyLabel: '売上', lyLabel: '前年売上', prefix: '¥' },
+        { cyKey: 'customers', lyKey: 'customers_ly', cyLabel: '客数', lyLabel: '前年客数' },
+        { cyKey: 'customer_spend', lyKey: 'customer_spend_ly', cyLabel: '客単価', lyLabel: '前年客単価', prefix: '¥' },
+    ];
+
+    const renderMetricCells = (data, isFooter = false) => (
+        nippoMetrics.flatMap(metric => [
+            <YoYTableCell key={`${metric.cyKey}-cy`} value={data?.[metric.cyKey]} isPriorYear={false} prefix={metric.prefix} isFooter={isFooter} />,
+            <YoYTableCell key={`${metric.cyKey}-ly`} value={data?.[metric.lyKey]} isPriorYear={true} prefix={metric.prefix} isFooter={isFooter} />,
+        ])
+    );
+
+    const renderMetricHeaders = () => (
+        nippoMetrics.flatMap(metric => [
+            <YoYTableHeader key={`${metric.cyKey}-cy`} label={metric.cyLabel} isPriorYear={false} />,
+            <YoYTableHeader key={`${metric.cyKey}-ly`} label={metric.lyLabel} isPriorYear={true} />,
+        ])
+    );
     
     return (
         <div className="bg-white shadow-md rounded-lg overflow-x-auto max-h-[75vh]">
@@ -1257,12 +1320,7 @@ const NippoTable = ({ reports, stores }) => {
                     <tr>
                         {['', ...stores].map((_, index) => (
                              <React.Fragment key={index}>
-                                <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider border-l">売上</th>
-                                <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">前年売上</th>
-                                <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">客数</th>
-                                <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">前年客数</th>
-                                <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">客単価</th>
-                                <th className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">前年客単価</th>
+                                {renderMetricHeaders()}
                             </React.Fragment>
                         ))}
                     </tr>
@@ -1276,25 +1334,12 @@ const NippoTable = ({ reports, stores }) => {
                                 <td className="px-2 py-4 text-center">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
                                 <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
                                 <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
-                                {renderCell(total.sales, '¥')}
-                                {renderCell(total.sales_ly, '¥')}
-                                {renderCell(total.customers)}
-                                {renderCell(total.customers_ly)}
-                                {renderCell(total.customer_spend, '¥')}
-                                {renderCell(total.customer_spend_ly, '¥')}
-                                {stores.map(store => {
-                                    const report = storeData[store.name];
-                                    return (
-                                        <React.Fragment key={store.id}>
-                                            {renderCell(report?.sales, '¥')}
-                                            {renderCell(report?.sales_ly, '¥')}
-                                            {renderCell(report?.customers)}
-                                            {renderCell(report?.customers_ly)}
-                                            {renderCell(report?.customer_spend, '¥')}
-                                            {renderCell(report?.customer_spend_ly, '¥')}
-                                        </React.Fragment>
-                                    );
-                                })}
+                                {renderMetricCells(total)}
+                                {stores.map(store => (
+                                    <React.Fragment key={store.id}>
+                                        {renderMetricCells(storeData[store.name])}
+                                    </React.Fragment>
+                                ))}
                             </tr>
                         );
                     })}
@@ -1302,47 +1347,21 @@ const NippoTable = ({ reports, stores }) => {
                 <tfoot className="bg-gray-200 font-bold">
                     <tr>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間合計</td>
-                        {renderCell(grandTotal.total.sales, '¥')}
-                        {renderCell(grandTotal.total.sales_ly, '¥')}
-                        {renderCell(grandTotal.total.customers)}
-                        {renderCell(grandTotal.total.customers_ly)}
-                        {renderCell(grandTotal.total.customer_spend, '¥')}
-                        {renderCell(grandTotal.total.customer_spend_ly, '¥')}
-                        {stores.map(store => {
-                            const total = grandTotal.storeTotals[store.name];
-                            return (
-                                <React.Fragment key={store.id}>
-                                    {renderCell(total.sales, '¥')}
-                                    {renderCell(total.sales_ly, '¥')}
-                                    {renderCell(total.customers)}
-                                    {renderCell(total.customers_ly)}
-                                    {renderCell(total.customer_spend, '¥')}
-                                    {renderCell(total.customer_spend_ly, '¥')}
-                                </React.Fragment>
-                            );
-                        })}
+                        {renderMetricCells(grandTotal.total, true)}
+                        {stores.map(store => (
+                            <React.Fragment key={store.id}>
+                                {renderMetricCells(grandTotal.storeTotals[store.name], true)}
+                            </React.Fragment>
+                        ))}
                     </tr>
                     <tr>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間平均</td>
-                        {renderCell(grandAverage.total.sales, '¥')}
-                        {renderCell(grandAverage.total.sales_ly, '¥')}
-                        {renderCell(grandAverage.total.customers)}
-                        {renderCell(grandAverage.total.customers_ly)}
-                        {renderCell(grandAverage.total.customer_spend, '¥')}
-                        {renderCell(grandAverage.total.customer_spend_ly, '¥')}
-                        {stores.map(store => {
-                            const avg = grandAverage.storeTotals[store.name];
-                            return (
-                                <React.Fragment key={store.id}>
-                                    {renderCell(avg.sales, '¥')}
-                                    {renderCell(avg.sales_ly, '¥')}
-                                    {renderCell(avg.customers)}
-                                    {renderCell(avg.customers_ly)}
-                                    {renderCell(avg.customer_spend, '¥')}
-                                    {renderCell(avg.customer_spend_ly, '¥')}
-                                </React.Fragment>
-                            );
-                        })}
+                        {renderMetricCells(grandAverage.total, true)}
+                        {stores.map(store => (
+                            <React.Fragment key={store.id}>
+                                {renderMetricCells(grandAverage.storeTotals[store.name], true)}
+                            </React.Fragment>
+                        ))}
                     </tr>
                 </tfoot>
             </table>
@@ -1475,27 +1494,25 @@ const HaikiTable = ({ reports, stores, dateRange }) => {
         return { tableData: sortedData, summary };
     }, [reports, stores, dateRange]);
 
-    const renderCell = (value) => (<td className="px-2 py-2 whitespace-nowrap text-sm text-gray-600 text-right">{value != null && isFinite(value) ? Math.round(value).toLocaleString() : '-'}</td>);
-
-    const renderWasteCells = (data) => (
+    const renderWasteCells = (data, isFooter = false) => (
         <>
             {wasteFields.flatMap(field => [
-                renderCell(data?.[field.key]),
-                renderCell(data?.[field.lyKey]),
+                <YoYTableCell key={`${field.key}-cy`} value={data?.[field.key]} isPriorYear={false} isFooter={isFooter} />,
+                <YoYTableCell key={`${field.lyKey}-ly`} value={data?.[field.lyKey]} isPriorYear={true} isFooter={isFooter} />,
             ])}
-            {renderCell(data?.total ?? data?.grandTotal)}
-            {renderCell(data?.totalLy ?? data?.grandTotalLy)}
+            <YoYTableCell value={data?.total ?? data?.grandTotal} isPriorYear={false} isFooter={isFooter} />
+            <YoYTableCell value={data?.totalLy ?? data?.grandTotalLy} isPriorYear={true} isFooter={isFooter} />
         </>
     );
 
     const renderHeaderCells = () => (
         <>
             {wasteFields.flatMap(field => [
-                <th key={field.key} className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider border-l">{field.label}</th>,
-                <th key={field.lyKey} className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">{field.lyLabel}</th>,
+                <YoYTableHeader key={field.key} label={field.label} isPriorYear={false} />,
+                <YoYTableHeader key={field.lyKey} label={field.lyLabel} isPriorYear={true} />,
             ])}
-            <th className="px-2 py-3 text-right text-xs font-bold text-gray-600 uppercase tracking-wider border-l">当日計</th>
-            <th className="px-2 py-3 text-right text-xs font-bold text-gray-600 uppercase tracking-wider">前年計</th>
+            <YoYTableHeader label="当日計" isPriorYear={false} />
+            <YoYTableHeader label="前年計" isPriorYear={true} />
         </>
     );
 
@@ -1549,19 +1566,19 @@ const HaikiTable = ({ reports, stores, dateRange }) => {
                 <tfoot className="bg-gray-200 font-bold">
                     <tr>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間合計</td>
-                        {renderWasteCells(summary.total)}
+                        {renderWasteCells(summary.total, true)}
                         {stores.map(store => (
                             <React.Fragment key={`${store.id}-total-footer`}>
-                                {renderWasteCells(summary.storeTotals[store.name])}
+                                {renderWasteCells(summary.storeTotals[store.name], true)}
                             </React.Fragment>
                         ))}
                     </tr>
                     <tr>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間平均</td>
-                        {renderWasteCells(summary.average)}
+                        {renderWasteCells(summary.average, true)}
                         {stores.map(store => (
                             <React.Fragment key={`${store.id}-avg-footer`}>
-                                {renderWasteCells(summary.storeAverages[store.name])}
+                                {renderWasteCells(summary.storeAverages[store.name], true)}
                             </React.Fragment>
                         ))}
                     </tr>
@@ -2578,10 +2595,14 @@ function AppContent() {
                 </button>
             </div>
              
-            <div className="pt-4 border-t border-gray-200">
+            <div className="pt-4 border-t border-gray-200 space-y-2">
                 <div className="flex items-center text-xs text-gray-600 bg-green-50 p-3 rounded-lg border border-green-200">
                     <DatabaseIcon />
                     <span className="ml-2 truncate font-medium" title={firebaseConfig.projectId}>Connected: {firebaseConfig.projectId}</span>
+                </div>
+                <div className="text-xs text-gray-500 bg-gray-50 p-3 rounded-lg border border-gray-200">
+                    <p className="font-semibold text-gray-700">v{APP_VERSION}</p>
+                    <p className="mt-1 text-gray-500">デプロイ: {formatBuildTime(BUILD_TIME)}</p>
                 </div>
             </div>
         </div>
