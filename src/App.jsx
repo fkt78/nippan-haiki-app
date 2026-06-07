@@ -1087,10 +1087,66 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
     );
 };
 
+const NIPPO_METRIC_OPTIONS = [
+    { id: 'sales', label: '売上', prefix: '¥' },
+    { id: 'customers', label: '客数' },
+    { id: 'customer_spend', label: '客単価', prefix: '¥' },
+];
+
+const HAIKI_METRIC_OPTIONS = [
+    { id: 'waste_product', label: '商品廃棄' },
+    { id: 'waste_owner_8', label: 'オーナー8%' },
+    { id: 'waste_owner_10', label: 'オーナー10%' },
+    { id: 'waste_promo_8', label: '販促8%' },
+    { id: 'waste_promo_10', label: '販促10%' },
+    { id: 'total', label: '当日計' },
+];
+
 const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     const [view, setView] = useState('nippo');
+    const [displayMode, setDisplayMode] = useState('focus');
+    const [yoyMode, setYoyMode] = useState('both');
+    const [selectedSections, setSelectedSections] = useState(['total']);
+    const [selectedNippoMetrics, setSelectedNippoMetrics] = useState(['sales', 'customers']);
+    const [selectedHaikiMetrics, setSelectedHaikiMetrics] = useState(['total']);
     const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
     const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
+
+    useEffect(() => {
+        setSelectedSections(['total']);
+        if (view === 'nippo') {
+            setSelectedNippoMetrics(['sales', 'customers']);
+        } else {
+            setSelectedHaikiMetrics(['total']);
+        }
+    }, [view]);
+
+    const tableConfig = useMemo(() => ({
+        mode: displayMode,
+        yoyMode,
+        selectedSections: displayMode === 'detail' ? ['total', ...stores.map(s => s.name)] : selectedSections,
+        selectedMetricIds: view === 'nippo'
+            ? (displayMode === 'detail' ? NIPPO_METRIC_OPTIONS.map(m => m.id) : selectedNippoMetrics)
+            : (displayMode === 'detail' ? HAIKI_METRIC_OPTIONS.map(m => m.id) : selectedHaikiMetrics),
+    }), [displayMode, yoyMode, selectedSections, selectedNippoMetrics, selectedHaikiMetrics, view, stores]);
+
+    const toggleSection = (sectionId) => {
+        setSelectedSections(prev => {
+            const next = prev.includes(sectionId) ? prev.filter(id => id !== sectionId) : [...prev, sectionId];
+            return next.length > 0 ? next : prev;
+        });
+    };
+
+    const toggleMetric = (metricId) => {
+        const setter = view === 'nippo' ? setSelectedNippoMetrics : setSelectedHaikiMetrics;
+        setter(prev => {
+            const next = prev.includes(metricId) ? prev.filter(id => id !== metricId) : [...prev, metricId];
+            return next.length > 0 ? next : prev;
+        });
+    };
+
+    const metricOptions = view === 'nippo' ? NIPPO_METRIC_OPTIONS : HAIKI_METRIC_OPTIONS;
+    const activeMetrics = view === 'nippo' ? selectedNippoMetrics : selectedHaikiMetrics;
 
     const combinedReports = useMemo(() => {
         const lyData = reportsLY.map(r => {
@@ -1138,21 +1194,63 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
 
     return(
         <div>
-            <div className="flex justify-between items-center mb-4">
+            <div className="flex flex-wrap justify-between items-start gap-4 mb-5">
                 <h1 className="text-3xl font-bold text-gray-800">データ一覧</h1>
-                <div className="flex space-x-2 p-1 bg-gray-200 rounded-lg">
-                    <button onClick={() => setView('nippo')} className={`px-4 py-2 text-sm font-semibold rounded-md ${view === 'nippo' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>日販データ</button>
-                    <button onClick={() => setView('haiki')} className={`px-4 py-2 text-sm font-semibold rounded-md ${view === 'haiki' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>廃棄データ</button>
+                <div className="flex space-x-2 p-1 bg-gray-200 rounded-xl">
+                    <button onClick={() => setView('nippo')} className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${view === 'nippo' ? 'bg-white text-blue-600 shadow' : 'text-gray-600 hover:text-gray-800'}`}>日販データ</button>
+                    <button onClick={() => setView('haiki')} className={`px-4 py-2 text-sm font-semibold rounded-lg transition-all ${view === 'haiki' ? 'bg-white text-blue-600 shadow' : 'text-gray-600 hover:text-gray-800'}`}>廃棄データ</button>
                 </div>
             </div>
-            <p className="mb-4 text-xs text-gray-500 flex items-center gap-4">
-                <span><span className="font-semibold text-gray-800">太字</span>＝本年</span>
-                <span className="inline-flex items-center gap-1">
-                    <span className="inline-block w-8 h-4 rounded border border-gray-200" style={lyColumnHatchStyle}></span>
-                    ＝前年
-                </span>
-            </p>
-            {view === 'nippo' ? <NippoTable reports={combinedReports} stores={stores} /> : <HaikiTable reports={combinedReports} stores={stores} dateRange={dateRange} />}
+
+            <div className="mb-5 bg-gradient-to-br from-slate-50 to-white border border-gray-200 rounded-2xl p-5 shadow-sm space-y-4">
+                <div className="flex flex-wrap items-center gap-3">
+                    <span className="text-xs font-bold text-gray-500 uppercase tracking-wider w-20 shrink-0">表示</span>
+                    <div className="flex p-1 bg-gray-100 rounded-lg">
+                        <button onClick={() => setDisplayMode('focus')} className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${displayMode === 'focus' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>フォーカス</button>
+                        <button onClick={() => setDisplayMode('detail')} className={`px-4 py-1.5 text-sm font-semibold rounded-md transition-all ${displayMode === 'detail' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>詳細（全列）</button>
+                    </div>
+                    <div className="flex p-1 bg-gray-100 rounded-lg">
+                        <button onClick={() => setYoyMode('both')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${yoyMode === 'both' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>本年+前年</button>
+                        <button onClick={() => setYoyMode('cy')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${yoyMode === 'cy' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>本年のみ</button>
+                        <button onClick={() => setYoyMode('ly')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${yoyMode === 'ly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>前年のみ</button>
+                    </div>
+                </div>
+
+                {displayMode === 'focus' && (
+                    <>
+                        <div className="flex flex-wrap items-start gap-3">
+                            <span className="text-xs font-bold text-gray-500 uppercase tracking-wider w-20 shrink-0 pt-1.5">店舗</span>
+                            <div className="flex flex-wrap gap-2">
+                                <button onClick={() => toggleSection('total')} className={`px-3 py-1.5 text-sm rounded-full border transition-all ${selectedSections.includes('total') ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-300'}`}>3店合計</button>
+                                {stores.map(store => (
+                                    <button key={store.id} onClick={() => toggleSection(store.name)} className={`px-3 py-1.5 text-sm rounded-full border transition-all ${selectedSections.includes(store.name) ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-gray-600 border-gray-300 hover:border-blue-300'}`}>{store.name}</button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap items-start gap-3">
+                            <span className="text-xs font-bold text-gray-500 uppercase tracking-wider w-20 shrink-0 pt-1.5">項目</span>
+                            <div className="flex flex-wrap gap-2">
+                                {metricOptions.map(metric => (
+                                    <button key={metric.id} onClick={() => toggleMetric(metric.id)} className={`px-3 py-1.5 text-sm rounded-full border transition-all ${activeMetrics.includes(metric.id) ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-white text-gray-600 border-gray-300 hover:border-emerald-300'}`}>{metric.label}</button>
+                                ))}
+                            </div>
+                        </div>
+                    </>
+                )}
+
+                <div className="flex flex-wrap items-center gap-4 pt-1 border-t border-gray-100 text-xs text-gray-500">
+                    <span><span className="inline-block w-3 h-3 rounded bg-blue-50 border border-blue-200 mr-1 align-middle"></span>選択中の項目を強調表示</span>
+                    <span><span className="font-semibold text-gray-800">太字</span>＝本年</span>
+                    <span className="inline-flex items-center gap-1">
+                        <span className="inline-block w-8 h-3 rounded border border-gray-200" style={lyColumnHatchStyle}></span>
+                        ＝前年
+                    </span>
+                </div>
+            </div>
+
+            {view === 'nippo'
+                ? <NippoTable reports={combinedReports} stores={stores} tableConfig={tableConfig} />
+                : <HaikiTable reports={combinedReports} stores={stores} dateRange={dateRange} tableConfig={tableConfig} />}
         </div>
     );
 }
@@ -1165,36 +1263,68 @@ const formatTableValue = (value, prefix = '') => (
     value != null && isFinite(value) ? `${prefix}${Math.round(value).toLocaleString()}` : '-'
 );
 
-const YoYTableHeader = ({ label, isPriorYear, className = '' }) => (
-    isPriorYear ? (
-        <th className={`px-2 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider bg-slate-100 ${className}`} style={lyColumnHatchStyle}>
-            {label}
-        </th>
-    ) : (
-        <th className={`px-2 py-3 text-right text-xs font-bold text-gray-800 uppercase tracking-wider border-l border-gray-200 ${className}`}>
-            {label}
-        </th>
-    )
+const YoYMetricGroupHeader = ({ label, colSpan, highlighted = false, isFirst = false }) => (
+    <th
+        colSpan={colSpan}
+        className={`px-3 py-2 text-center text-xs font-bold tracking-wide border-b border-gray-200 ${isFirst ? 'border-l-2 border-l-blue-300' : 'border-l border-gray-200'} ${highlighted ? 'bg-blue-100 text-blue-900' : 'bg-gray-50 text-gray-600'}`}
+    >
+        {label}
+    </th>
 );
 
-const YoYTableCell = ({ value, isPriorYear, prefix = '', isFooter = false }) => {
-    const display = formatTableValue(value, prefix);
-    const padding = isFooter ? 'py-3' : 'py-2';
+const YoYTableHeader = ({ label, isPriorYear, className = '', highlighted = false, compact = false }) => {
+    const text = compact ? (isPriorYear ? '前年' : '本年') : label;
     if (isPriorYear) {
         return (
-            <td className={`px-2 ${padding} whitespace-nowrap text-sm font-normal text-gray-500 text-right bg-slate-100`} style={lyColumnHatchStyle}>
+            <th className={`px-2 py-2 text-right text-[11px] font-medium text-gray-400 tracking-wider ${highlighted ? 'bg-blue-50' : 'bg-slate-100'} ${className}`} style={lyColumnHatchStyle}>
+                {text}
+            </th>
+        );
+    }
+    return (
+        <th className={`px-2 py-2 text-right text-[11px] font-bold text-gray-700 tracking-wider border-l border-gray-200 ${highlighted ? 'bg-blue-50 text-blue-900' : ''} ${className}`}>
+            {text}
+        </th>
+    );
+};
+
+const YoYTableCell = ({ value, isPriorYear, prefix = '', isFooter = false, highlighted = false }) => {
+    const display = formatTableValue(value, prefix);
+    const padding = isFooter ? 'py-3' : 'py-2.5';
+    if (isPriorYear) {
+        return (
+            <td
+                className={`px-3 ${padding} whitespace-nowrap text-sm font-normal text-gray-500 text-right tabular-nums ${highlighted ? 'bg-blue-50/80' : 'bg-slate-50'}`}
+                style={lyColumnHatchStyle}
+            >
                 {display}
             </td>
         );
     }
     return (
-        <td className={`px-2 ${padding} whitespace-nowrap text-sm ${isFooter ? 'font-bold text-gray-900' : 'font-semibold text-gray-800'} text-right`}>
+        <td className={`px-3 ${padding} whitespace-nowrap text-sm text-right tabular-nums border-l border-gray-100 ${highlighted ? 'bg-blue-50/60' : ''} ${isFooter ? 'font-bold text-gray-900' : 'font-semibold text-gray-800'}`}>
             {display}
         </td>
     );
 };
 
-const NippoTable = ({ reports, stores }) => {
+const getYoYColSpan = (yoyMode) => (yoyMode === 'both' ? 2 : 1);
+
+const renderYoYCellsForMetric = ({ data, cyKey, lyKey, prefix = '', yoyMode, highlighted = false, isFooter = false }) => {
+    const cells = [];
+    if (yoyMode !== 'ly') cells.push(<YoYTableCell key={`${cyKey}-cy`} value={data?.[cyKey]} isPriorYear={false} prefix={prefix} isFooter={isFooter} highlighted={highlighted} />);
+    if (yoyMode !== 'cy') cells.push(<YoYTableCell key={`${cyKey}-ly`} value={data?.[lyKey]} isPriorYear={true} prefix={prefix} isFooter={isFooter} highlighted={highlighted} />);
+    return cells;
+};
+
+const renderYoYHeadersForMetric = ({ cyLabel, lyLabel, yoyMode, highlighted = false, compact = true }) => {
+    const headers = [];
+    if (yoyMode !== 'ly') headers.push(<YoYTableHeader key={`${cyLabel}-cy`} label={cyLabel} isPriorYear={false} highlighted={highlighted} compact={compact} />);
+    if (yoyMode !== 'cy') headers.push(<YoYTableHeader key={`${cyLabel}-ly`} label={lyLabel} isPriorYear={true} highlighted={highlighted} compact={compact} />);
+    return headers;
+};
+
+const NippoTable = ({ reports, stores, tableConfig }) => {
     const { tableData, grandTotal, grandAverage } = useMemo(() => {
         const dataByDate = new Map();
         
@@ -1286,104 +1416,208 @@ const NippoTable = ({ reports, stores }) => {
     }, [reports, stores]);
 
     const nippoMetrics = [
-        { cyKey: 'sales', lyKey: 'sales_ly', cyLabel: '売上', lyLabel: '前年売上', prefix: '¥' },
-        { cyKey: 'customers', lyKey: 'customers_ly', cyLabel: '客数', lyLabel: '前年客数' },
-        { cyKey: 'customer_spend', lyKey: 'customer_spend_ly', cyLabel: '客単価', lyLabel: '前年客単価', prefix: '¥' },
+        { id: 'sales', cyKey: 'sales', lyKey: 'sales_ly', cyLabel: '売上', lyLabel: '前年売上', prefix: '¥' },
+        { id: 'customers', cyKey: 'customers', lyKey: 'customers_ly', cyLabel: '客数', lyLabel: '前年客数' },
+        { id: 'customer_spend', cyKey: 'customer_spend', lyKey: 'customer_spend_ly', cyLabel: '客単価', lyLabel: '前年客単価', prefix: '¥' },
     ];
 
-    const renderMetricCells = (data, isFooter = false) => (
-        nippoMetrics.flatMap(metric => [
-            <YoYTableCell key={`${metric.cyKey}-cy`} value={data?.[metric.cyKey]} isPriorYear={false} prefix={metric.prefix} isFooter={isFooter} />,
-            <YoYTableCell key={`${metric.cyKey}-ly`} value={data?.[metric.lyKey]} isPriorYear={true} prefix={metric.prefix} isFooter={isFooter} />,
-        ])
+    const visibleMetrics = nippoMetrics.filter(metric => tableConfig.selectedMetricIds.includes(metric.id));
+    const visibleSections = tableConfig.selectedSections.map(sectionId => (
+        sectionId === 'total'
+            ? { id: 'total', label: '3店合計' }
+            : { id: sectionId, label: sectionId, storeName: sectionId }
+    ));
+    const metricColSpan = visibleMetrics.length * getYoYColSpan(tableConfig.yoyMode);
+
+    const getSectionData = (section, rowData, summaryType) => {
+        if (section.id === 'total') {
+            if (summaryType === 'total') return grandTotal.total;
+            if (summaryType === 'average') return grandAverage.total;
+            return rowData.total;
+        }
+        if (summaryType === 'total') return grandTotal.storeTotals[section.storeName];
+        if (summaryType === 'average') return grandAverage.storeTotals[section.storeName];
+        return rowData.storeData[section.storeName];
+    };
+
+    const renderSectionMetrics = (data, isFooter = false) => (
+        visibleMetrics.flatMap(metric => renderYoYCellsForMetric({
+            data,
+            cyKey: metric.cyKey,
+            lyKey: metric.lyKey,
+            prefix: metric.prefix,
+            yoyMode: tableConfig.yoyMode,
+            highlighted: tableConfig.mode === 'focus',
+            isFooter,
+        }))
     );
 
-    const renderMetricHeaders = () => (
-        nippoMetrics.flatMap(metric => [
-            <YoYTableHeader key={`${metric.cyKey}-cy`} label={metric.cyLabel} isPriorYear={false} />,
-            <YoYTableHeader key={`${metric.cyKey}-ly`} label={metric.lyLabel} isPriorYear={true} />,
-        ])
-    );
+    const stickyMetaClass = 'sticky z-20 bg-white';
     
     return (
-        <div className="bg-white shadow-md rounded-lg overflow-x-auto max-h-[75vh]">
-            <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-100 sticky top-0 z-10">
-                    <tr>
-                        <th rowSpan="2" className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom z-10 bg-gray-100">日付</th>
-                        <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">天気</th>
-                        <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">気温</th>
-                        <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">降水</th>
-                        <th colSpan="6" className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">3店合計</th>
-                        {stores.map(store => <th key={store.id} colSpan="6" className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">{store.name}</th>)}
+        <div className="bg-white border border-gray-200 shadow-sm rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto max-h-[72vh]">
+            <table className="min-w-full border-separate border-spacing-0">
+                <thead className="sticky top-0 z-30">
+                    <tr className="bg-slate-100">
+                        <th rowSpan="3" className={`${stickyMetaClass} left-0 px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider align-bottom border-b border-gray-200`}>日付</th>
+                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">天気</th>
+                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">気温</th>
+                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">降水</th>
+                        {visibleSections.map((section, index) => (
+                            <th key={section.id} colSpan={metricColSpan} className={`px-4 py-2 text-center text-sm font-bold tracking-wide border-b border-l-2 ${index === 0 ? 'border-l-blue-300 text-blue-900 bg-blue-50' : 'border-l-gray-300 text-gray-700 bg-gray-50'}`}>
+                                {section.label}
+                            </th>
+                        ))}
                     </tr>
-                    <tr>
-                        {['', ...stores].map((_, index) => (
-                             <React.Fragment key={index}>
-                                {renderMetricHeaders()}
+                    <tr className="bg-slate-50">
+                        {visibleSections.map((section, sectionIndex) => (
+                            <React.Fragment key={`${section.id}-sub`}>
+                                {visibleMetrics.map((metric, metricIndex) => (
+                                    <React.Fragment key={`${section.id}-${metric.id}`}>
+                                        <YoYMetricGroupHeader
+                                            label={metric.cyLabel}
+                                            colSpan={getYoYColSpan(tableConfig.yoyMode)}
+                                            highlighted={tableConfig.mode === 'focus'}
+                                            isFirst={sectionIndex === 0 && metricIndex === 0}
+                                        />
+                                    </React.Fragment>
+                                ))}
+                            </React.Fragment>
+                        ))}
+                    </tr>
+                    <tr className="bg-white border-b-2 border-gray-200">
+                        {visibleSections.map(section => (
+                            <React.Fragment key={`${section.id}-yoy`}>
+                                {visibleMetrics.flatMap(metric => renderYoYHeadersForMetric({
+                                    cyLabel: metric.cyLabel,
+                                    lyLabel: metric.lyLabel,
+                                    yoyMode: tableConfig.yoyMode,
+                                    highlighted: tableConfig.mode === 'focus',
+                                    compact: true,
+                                }))}
                             </React.Fragment>
                         ))}
                     </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                    {tableData.map(({ date, storeData, total }) => {
+                <tbody>
+                    {tableData.map(({ date, storeData, total }, rowIndex) => {
                         const dailyWeather = Object.values(storeData).find(report => report && report.weather)?.weather;
+                        const rowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/70';
                         return (
-                            <tr key={date} className="hover:bg-gray-50">
-                                <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">{date}</td>
-                                <td className="px-2 py-4 text-center">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
-                                <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
-                                <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
-                                {renderMetricCells(total)}
-                                {stores.map(store => (
-                                    <React.Fragment key={store.id}>
-                                        {renderMetricCells(storeData[store.name])}
+                            <tr key={date} className={`${rowBg} hover:bg-blue-50/30 transition-colors`}>
+                                <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{date}</td>
+                                <td className="px-2 py-3 text-center border-b border-gray-100">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
+                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
+                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
+                                {visibleSections.map(section => (
+                                    <React.Fragment key={`${date}-${section.id}`}>
+                                        {renderSectionMetrics(getSectionData(section, { storeData, total }))}
                                     </React.Fragment>
                                 ))}
                             </tr>
                         );
                     })}
                 </tbody>
-                <tfoot className="bg-gray-200 font-bold">
-                    <tr>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間合計</td>
-                        {renderMetricCells(grandTotal.total, true)}
-                        {stores.map(store => (
-                            <React.Fragment key={store.id}>
-                                {renderMetricCells(grandTotal.storeTotals[store.name], true)}
+                <tfoot className="sticky bottom-0 z-20">
+                    <tr className="bg-gray-100 border-t-2 border-gray-300">
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 border-t-2 border-gray-300 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間合計</td>
+                        {visibleSections.map(section => (
+                            <React.Fragment key={`${section.id}-sum`}>
+                                {renderSectionMetrics(getSectionData(section, {}, 'total'), true)}
                             </React.Fragment>
                         ))}
                     </tr>
-                    <tr>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間平均</td>
-                        {renderMetricCells(grandAverage.total, true)}
-                        {stores.map(store => (
-                            <React.Fragment key={store.id}>
-                                {renderMetricCells(grandAverage.storeTotals[store.name], true)}
+                    <tr className="bg-gray-200">
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間平均</td>
+                        {visibleSections.map(section => (
+                            <React.Fragment key={`${section.id}-avg`}>
+                                {renderSectionMetrics(getSectionData(section, {}, 'average'), true)}
                             </React.Fragment>
                         ))}
                     </tr>
                 </tfoot>
             </table>
+            </div>
             {tableData.length === 0 && <p className="text-center p-8 text-gray-500">選択された期間にデータはありません。</p>}
         </div>
     );
 };
 
-const HaikiTable = ({ reports, stores, dateRange }) => {
+const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
     const wasteFields = [
-        { key: 'waste_product', lyKey: 'waste_product_ly', label: '商品廃棄', lyLabel: '前年商品廃棄' },
-        { key: 'waste_owner_8', lyKey: 'waste_owner_8_ly', label: 'オナ8%', lyLabel: '前年オナ8%' },
-        { key: 'waste_owner_10', lyKey: 'waste_owner_10_ly', label: 'オナ10%', lyLabel: '前年オナ10%' },
-        { key: 'waste_promo_8', lyKey: 'waste_promo_8_ly', label: '販促8%', lyLabel: '前年販促8%' },
-        { key: 'waste_promo_10', lyKey: 'waste_promo_10_ly', label: '販促10%', lyLabel: '前年販促10%' },
+        { id: 'waste_product', key: 'waste_product', lyKey: 'waste_product_ly', label: '商品廃棄', lyLabel: '前年商品廃棄' },
+        { id: 'waste_owner_8', key: 'waste_owner_8', lyKey: 'waste_owner_8_ly', label: 'オーナー8%', lyLabel: '前年オーナー8%' },
+        { id: 'waste_owner_10', key: 'waste_owner_10', lyKey: 'waste_owner_10_ly', label: 'オーナー10%', lyLabel: '前年オーナー10%' },
+        { id: 'waste_promo_8', key: 'waste_promo_8', lyKey: 'waste_promo_8_ly', label: '販促8%', lyLabel: '前年販促8%' },
+        { id: 'waste_promo_10', key: 'waste_promo_10', lyKey: 'waste_promo_10_ly', label: '販促10%', lyLabel: '前年販促10%' },
+        { id: 'total', key: 'total', lyKey: 'totalLy', label: '当日計', lyLabel: '前年計', isTotal: true },
     ];
-    const colsPerSection = wasteFields.length * 2 + 2;
+    const visibleFieldMetrics = wasteFields.filter(field => {
+        if (field.isTotal) return tableConfig.selectedMetricIds.includes('total');
+        return tableConfig.selectedMetricIds.includes(field.id);
+    });
+    const visibleSections = tableConfig.selectedSections.map(sectionId => (
+        sectionId === 'total'
+            ? { id: 'total', label: '3店合計' }
+            : { id: sectionId, label: sectionId, storeName: sectionId }
+    ));
+    const metricColSpan = visibleFieldMetrics.length * getYoYColSpan(tableConfig.yoyMode);
 
     const sumWasteFields = (report, useLy = false) => {
         if (!report) return 0;
-        return wasteFields.reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
+        return wasteFields.filter(f => !f.isTotal).reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
     };
+
+    const enrichRowData = (report) => {
+        if (!report) return null;
+        return { ...report, total: sumWasteFields(report, false), totalLy: sumWasteFields(report, true) };
+    };
+
+    const normalizeHaikiData = (raw) => {
+        if (!raw) return null;
+        return {
+            ...raw,
+            total: raw.total ?? raw.grandTotal,
+            totalLy: raw.totalLy ?? raw.grandTotalLy,
+        };
+    };
+
+    const getSectionRowData = (section, row) => {
+        if (section.id === 'total') return normalizeHaikiData(row.total);
+        return normalizeHaikiData(enrichRowData(row.storeData[section.storeName]));
+    };
+
+    const getSectionSummaryData = (section, kind) => {
+        if (section.id === 'total') {
+            return normalizeHaikiData(kind === 'average' ? summary.average : summary.total);
+        }
+        const storeSource = kind === 'average' ? summary.storeAverages[section.storeName] : summary.storeTotals[section.storeName];
+        return normalizeHaikiData(storeSource);
+    };
+
+    const renderHaikiMetrics = (data, isFooter = false) => (
+        visibleFieldMetrics.flatMap(field => {
+            if (field.isTotal) {
+                return renderYoYCellsForMetric({
+                    data,
+                    cyKey: 'total',
+                    lyKey: 'totalLy',
+                    yoyMode: tableConfig.yoyMode,
+                    highlighted: tableConfig.mode === 'focus',
+                    isFooter,
+                });
+            }
+            return renderYoYCellsForMetric({
+                data,
+                cyKey: field.key,
+                lyKey: field.lyKey,
+                yoyMode: tableConfig.yoyMode,
+                highlighted: tableConfig.mode === 'focus',
+                isFooter,
+            });
+        })
+    );
 
     const { tableData, summary } = useMemo(() => {
         const dataByDate = new Map();
@@ -1494,96 +1728,92 @@ const HaikiTable = ({ reports, stores, dateRange }) => {
         return { tableData: sortedData, summary };
     }, [reports, stores, dateRange]);
 
-    const renderWasteCells = (data, isFooter = false) => (
-        <>
-            {wasteFields.flatMap(field => [
-                <YoYTableCell key={`${field.key}-cy`} value={data?.[field.key]} isPriorYear={false} isFooter={isFooter} />,
-                <YoYTableCell key={`${field.lyKey}-ly`} value={data?.[field.lyKey]} isPriorYear={true} isFooter={isFooter} />,
-            ])}
-            <YoYTableCell value={data?.total ?? data?.grandTotal} isPriorYear={false} isFooter={isFooter} />
-            <YoYTableCell value={data?.totalLy ?? data?.grandTotalLy} isPriorYear={true} isFooter={isFooter} />
-        </>
-    );
-
-    const renderHeaderCells = () => (
-        <>
-            {wasteFields.flatMap(field => [
-                <YoYTableHeader key={field.key} label={field.label} isPriorYear={false} />,
-                <YoYTableHeader key={field.lyKey} label={field.lyLabel} isPriorYear={true} />,
-            ])}
-            <YoYTableHeader label="当日計" isPriorYear={false} />
-            <YoYTableHeader label="前年計" isPriorYear={true} />
-        </>
-    );
+    const stickyMetaClass = 'sticky z-20 bg-white';
 
     return (
-         <div className="bg-white shadow-md rounded-lg overflow-x-auto max-h-[75vh]">
-            <table className="min-w-full divide-y divide-gray-200">
-                <thead className="bg-gray-100 sticky top-0 z-10">
-                    <tr>
-                        <th rowSpan="2" className="px-4 py-3 text-left text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom z-10 bg-gray-100">日付</th>
-                        <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">天気</th>
-                        <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">気温</th>
-                        <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">降水</th>
-                        <th colSpan={colsPerSection} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">3店合計</th>
-                        {stores.map(store => <th key={store.id} colSpan={colsPerSection} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">{store.name}</th>)}
+         <div className="bg-white border border-gray-200 shadow-sm rounded-2xl overflow-hidden">
+            <div className="overflow-x-auto max-h-[72vh]">
+            <table className="min-w-full border-separate border-spacing-0">
+                <thead className="sticky top-0 z-30">
+                    <tr className="bg-slate-100">
+                        <th rowSpan="3" className={`${stickyMetaClass} left-0 px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider align-bottom border-b border-gray-200`}>日付</th>
+                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">天気</th>
+                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">気温</th>
+                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">降水</th>
+                        {visibleSections.map((section, index) => (
+                            <th key={section.id} colSpan={metricColSpan} className={`px-4 py-2 text-center text-sm font-bold tracking-wide border-b border-l-2 ${index === 0 ? 'border-l-blue-300 text-blue-900 bg-blue-50' : 'border-l-gray-300 text-gray-700 bg-gray-50'}`}>
+                                {section.label}
+                            </th>
+                        ))}
                     </tr>
-                    <tr>
-                         {['', ...stores].map((store, index) => (
-                             <React.Fragment key={store.id || index}>
-                                {renderHeaderCells()}
+                    <tr className="bg-slate-50">
+                        {visibleSections.map((section, sectionIndex) => (
+                            <React.Fragment key={`${section.id}-groups`}>
+                                {visibleFieldMetrics.map((field, metricIndex) => (
+                                    <YoYMetricGroupHeader
+                                        key={`${section.id}-${field.id}`}
+                                        label={field.label}
+                                        colSpan={getYoYColSpan(tableConfig.yoyMode)}
+                                        highlighted={tableConfig.mode === 'focus'}
+                                        isFirst={sectionIndex === 0 && metricIndex === 0}
+                                    />
+                                ))}
+                            </React.Fragment>
+                        ))}
+                    </tr>
+                    <tr className="bg-white border-b-2 border-gray-200">
+                        {visibleSections.map(section => (
+                            <React.Fragment key={`${section.id}-yoy`}>
+                                {visibleFieldMetrics.flatMap(field => renderYoYHeadersForMetric({
+                                    cyLabel: field.label,
+                                    lyLabel: field.lyLabel,
+                                    yoyMode: tableConfig.yoyMode,
+                                    highlighted: tableConfig.mode === 'focus',
+                                    compact: true,
+                                }))}
                             </React.Fragment>
                         ))}
                     </tr>
                 </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                    {tableData.map(({ date, storeData, total }) => {
+                <tbody>
+                    {tableData.map(({ date, storeData, total }, rowIndex) => {
                         const dailyWeather = Object.values(storeData).find(report => report && report.weather)?.weather;
+                        const rowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/70';
                         return (
-                            <tr key={date} className="hover:bg-gray-50">
-                                <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900 font-medium">{date}</td>
-                                <td className="px-2 py-4 text-center">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
-                                <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
-                                <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
-                                {renderWasteCells(total)}
-                                {stores.map(store => {
-                                    const report = storeData[store.name];
-                                    const storeDaily = report ? {
-                                        ...report,
-                                        total: sumWasteFields(report, false),
-                                        totalLy: sumWasteFields(report, true),
-                                    } : null;
-                                    return (
-                                        <React.Fragment key={`${date}-${store.id}`}>
-                                            {renderWasteCells(storeDaily)}
-                                        </React.Fragment>
-                                    );
-                                })}
+                            <tr key={date} className={`${rowBg} hover:bg-blue-50/30 transition-colors`}>
+                                <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{date}</td>
+                                <td className="px-2 py-3 text-center border-b border-gray-100">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
+                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
+                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
+                                {visibleSections.map(section => (
+                                    <React.Fragment key={`${date}-${section.id}`}>
+                                        {renderHaikiMetrics(getSectionRowData(section, { storeData, total }))}
+                                    </React.Fragment>
+                                ))}
                             </tr>
                         );
                     })}
                 </tbody>
-                <tfoot className="bg-gray-200 font-bold">
-                    <tr>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間合計</td>
-                        {renderWasteCells(summary.total, true)}
-                        {stores.map(store => (
-                            <React.Fragment key={`${store.id}-total-footer`}>
-                                {renderWasteCells(summary.storeTotals[store.name], true)}
+                <tfoot className="sticky bottom-0 z-20">
+                    <tr className="bg-gray-100 border-t-2 border-gray-300">
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 border-t-2 border-gray-300 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間合計</td>
+                        {visibleSections.map(section => (
+                            <React.Fragment key={`${section.id}-sum`}>
+                                {renderHaikiMetrics(getSectionSummaryData(section, 'total'), true)}
                             </React.Fragment>
                         ))}
                     </tr>
-                    <tr>
-                        <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間平均</td>
-                        {renderWasteCells(summary.average, true)}
-                        {stores.map(store => (
-                            <React.Fragment key={`${store.id}-avg-footer`}>
-                                {renderWasteCells(summary.storeAverages[store.name], true)}
+                    <tr className="bg-gray-200">
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間平均</td>
+                        {visibleSections.map(section => (
+                            <React.Fragment key={`${section.id}-avg`}>
+                                {renderHaikiMetrics(getSectionSummaryData(section, 'average'), true)}
                             </React.Fragment>
                         ))}
                     </tr>
                 </tfoot>
             </table>
+            </div>
             {tableData.length === 0 && <p className="text-center p-8 text-gray-500">選択された期間にデータはありません。</p>}
         </div>
     );
