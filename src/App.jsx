@@ -1102,6 +1102,11 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
                 sales_ly: r.sales,
                 customers_ly: r.customers,
                 customer_spend_ly: r.customer_spend,
+                waste_product_ly: r.waste_product,
+                waste_owner_8_ly: r.waste_owner_8,
+                waste_owner_10_ly: r.waste_owner_10,
+                waste_promo_8_ly: r.waste_promo_8,
+                waste_promo_10_ly: r.waste_promo_10,
             };
         }).filter(Boolean);
 
@@ -1139,7 +1144,7 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
                     <button onClick={() => setView('haiki')} className={`px-4 py-2 text-sm font-semibold rounded-md ${view === 'haiki' ? 'bg-white text-blue-600 shadow' : 'text-gray-600'}`}>廃棄データ</button>
                 </div>
             </div>
-            {view === 'nippo' ? <NippoTable reports={combinedReports} stores={stores} /> : <HaikiTable reports={reports} stores={stores} dateRange={dateRange} />}
+            {view === 'nippo' ? <NippoTable reports={combinedReports} stores={stores} /> : <HaikiTable reports={combinedReports} stores={stores} dateRange={dateRange} />}
         </div>
     );
 }
@@ -1348,17 +1353,23 @@ const NippoTable = ({ reports, stores }) => {
 
 const HaikiTable = ({ reports, stores, dateRange }) => {
     const wasteFields = [
-        { key: 'waste_product', label: '商品廃棄' },
-        { key: 'waste_owner_8', label: 'オナ8%' },
-        { key: 'waste_owner_10', label: 'オナ10%' },
-        { key: 'waste_promo_8', label: '販促8%' },
-        { key: 'waste_promo_10', label: '販促10%' },
+        { key: 'waste_product', lyKey: 'waste_product_ly', label: '商品廃棄', lyLabel: '前年商品廃棄' },
+        { key: 'waste_owner_8', lyKey: 'waste_owner_8_ly', label: 'オナ8%', lyLabel: '前年オナ8%' },
+        { key: 'waste_owner_10', lyKey: 'waste_owner_10_ly', label: 'オナ10%', lyLabel: '前年オナ10%' },
+        { key: 'waste_promo_8', lyKey: 'waste_promo_8_ly', label: '販促8%', lyLabel: '前年販促8%' },
+        { key: 'waste_promo_10', lyKey: 'waste_promo_10_ly', label: '販促10%', lyLabel: '前年販促10%' },
     ];
+    const colsPerSection = wasteFields.length * 2 + 2;
+
+    const sumWasteFields = (report, useLy = false) => {
+        if (!report) return 0;
+        return wasteFields.reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
+    };
 
     const { tableData, summary } = useMemo(() => {
         const dataByDate = new Map();
         let dayCount = 0;
-        
+
         let currentDate = new Date(dateRange.startDate);
         if (currentDate <= dateRange.endDate) {
             while (currentDate <= dateRange.endDate) {
@@ -1374,66 +1385,119 @@ const HaikiTable = ({ reports, stores, dateRange }) => {
             if (!report.date) return;
             const dateStr = getLocalDateString(report.date.toDate());
             if (dataByDate.has(dateStr)) {
-                dataByDate.get(dateStr).storeData[report.store] = report;
+                const existingData = dataByDate.get(dateStr).storeData[report.store] || {};
+                dataByDate.get(dateStr).storeData[report.store] = { ...existingData, ...report };
             }
         });
 
-        const sortedData = Array.from(dataByDate.entries()).map(([date, data]) => ({ date, ...data }))
-            .sort((a, b) => new Date(a.date) - new Date(b.date));
+        const sortedData = Array.from(dataByDate.entries()).map(([date, data]) => {
+            const total = { grandTotal: 0, grandTotalLy: 0 };
+            wasteFields.forEach(field => {
+                total[field.key] = 0;
+                total[field.lyKey] = 0;
+            });
+            stores.forEach(store => {
+                const report = data.storeData[store.name];
+                if (report) {
+                    wasteFields.forEach(field => {
+                        total[field.key] += report[field.key] || 0;
+                        total[field.lyKey] += report[field.lyKey] || 0;
+                    });
+                    total.grandTotal += sumWasteFields(report, false);
+                    total.grandTotalLy += sumWasteFields(report, true);
+                }
+            });
+            return { date, ...data, total };
+        }).sort((a, b) => new Date(a.date) - new Date(b.date));
 
         const summary = {
-            total: { grandTotal: 0 }, average: { grandTotal: 0 },
-            storeTotals: {}, storeAverages: {}
+            total: { grandTotal: 0, grandTotalLy: 0 },
+            average: { grandTotal: 0, grandTotalLy: 0 },
+            storeTotals: {},
+            storeAverages: {}
         };
-        
+
         wasteFields.forEach(field => {
             summary.total[field.key] = 0;
+            summary.total[field.lyKey] = 0;
             summary.average[field.key] = 0;
+            summary.average[field.lyKey] = 0;
         });
 
         stores.forEach(store => {
-            summary.storeTotals[store.name] = { total: 0 };
-            summary.storeAverages[store.name] = { total: 0 };
+            summary.storeTotals[store.name] = { total: 0, totalLy: 0 };
+            summary.storeAverages[store.name] = { total: 0, totalLy: 0 };
             wasteFields.forEach(field => {
                 summary.storeTotals[store.name][field.key] = 0;
+                summary.storeTotals[store.name][field.lyKey] = 0;
                 summary.storeAverages[store.name][field.key] = 0;
+                summary.storeAverages[store.name][field.lyKey] = 0;
             });
         });
 
         sortedData.forEach(row => {
+            wasteFields.forEach(field => {
+                summary.total[field.key] += row.total[field.key];
+                summary.total[field.lyKey] += row.total[field.lyKey];
+            });
+            summary.total.grandTotal += row.total.grandTotal;
+            summary.total.grandTotalLy += row.total.grandTotalLy;
+
             stores.forEach(store => {
                 const report = row.storeData[store.name];
                 if (report) {
-                    let dailyStoreTotal = 0;
                     wasteFields.forEach(field => {
-                        const value = report[field.key] || 0;
-                        summary.storeTotals[store.name][field.key] += value;
-                        dailyStoreTotal += value;
+                        summary.storeTotals[store.name][field.key] += report[field.key] || 0;
+                        summary.storeTotals[store.name][field.lyKey] += report[field.lyKey] || 0;
                     });
-                    summary.storeTotals[store.name].total += dailyStoreTotal;
+                    summary.storeTotals[store.name].total += sumWasteFields(report, false);
+                    summary.storeTotals[store.name].totalLy += sumWasteFields(report, true);
                 }
             });
         });
 
+        wasteFields.forEach(field => {
+            summary.average[field.key] = summary.total[field.key] / dayCount;
+            summary.average[field.lyKey] = summary.total[field.lyKey] / dayCount;
+        });
+        summary.average.grandTotal = summary.total.grandTotal / dayCount;
+        summary.average.grandTotalLy = summary.total.grandTotalLy / dayCount;
+
         stores.forEach(store => {
             wasteFields.forEach(field => {
                 summary.storeAverages[store.name][field.key] = summary.storeTotals[store.name][field.key] / dayCount;
-                summary.total[field.key] += summary.storeTotals[store.name][field.key];
+                summary.storeAverages[store.name][field.lyKey] = summary.storeTotals[store.name][field.lyKey] / dayCount;
             });
             summary.storeAverages[store.name].total = summary.storeTotals[store.name].total / dayCount;
-            summary.total.grandTotal += summary.storeTotals[store.name].total;
+            summary.storeAverages[store.name].totalLy = summary.storeTotals[store.name].totalLy / dayCount;
         });
-
-        wasteFields.forEach(field => {
-            summary.average[field.key] = summary.total[field.key] / dayCount;
-        });
-        summary.average.grandTotal = summary.total.grandTotal / dayCount;
 
         return { tableData: sortedData, summary };
-
     }, [reports, stores, dateRange]);
 
-    const renderCell = (value, prefix = '') => (<td key={Math.random()} className="px-2 py-2 whitespace-nowrap text-sm text-gray-600 text-right">{value != null && isFinite(value) ? `${prefix}${Math.round(value).toLocaleString()}` : '-'}</td>);
+    const renderCell = (value) => (<td className="px-2 py-2 whitespace-nowrap text-sm text-gray-600 text-right">{value != null && isFinite(value) ? Math.round(value).toLocaleString() : '-'}</td>);
+
+    const renderWasteCells = (data) => (
+        <>
+            {wasteFields.flatMap(field => [
+                renderCell(data?.[field.key]),
+                renderCell(data?.[field.lyKey]),
+            ])}
+            {renderCell(data?.total ?? data?.grandTotal)}
+            {renderCell(data?.totalLy ?? data?.grandTotalLy)}
+        </>
+    );
+
+    const renderHeaderCells = () => (
+        <>
+            {wasteFields.flatMap(field => [
+                <th key={field.key} className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider border-l">{field.label}</th>,
+                <th key={field.lyKey} className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">{field.lyLabel}</th>,
+            ])}
+            <th className="px-2 py-3 text-right text-xs font-bold text-gray-600 uppercase tracking-wider border-l">当日計</th>
+            <th className="px-2 py-3 text-right text-xs font-bold text-gray-600 uppercase tracking-wider">前年計</th>
+        </>
+    );
 
     return (
          <div className="bg-white shadow-md rounded-lg overflow-x-auto max-h-[75vh]">
@@ -1444,84 +1508,60 @@ const HaikiTable = ({ reports, stores, dateRange }) => {
                         <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">天気</th>
                         <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">気温</th>
                         <th rowSpan="2" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom">降水</th>
-                        <th colSpan={wasteFields.length + 1} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">3店合計</th>
-                        {stores.map(store => <th key={store.id} colSpan={wasteFields.length + 1} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">{store.name}</th>)}
+                        <th colSpan={colsPerSection} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">3店合計</th>
+                        {stores.map(store => <th key={store.id} colSpan={colsPerSection} className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider border-l border-b-2 border-gray-300">{store.name}</th>)}
                     </tr>
                     <tr>
                          {['', ...stores].map((store, index) => (
                              <React.Fragment key={store.id || index}>
-                                {wasteFields.map(field => <th key={field.key} className="px-2 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider border-l">{field.label}</th>)}
-                                <th className="px-2 py-3 text-right text-xs font-bold text-gray-600 uppercase tracking-wider border-l">当日計</th>
+                                {renderHeaderCells()}
                             </React.Fragment>
                         ))}
                     </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                    {tableData.map(({ date, storeData }) => {
+                    {tableData.map(({ date, storeData, total }) => {
                         const dailyWeather = Object.values(storeData).find(report => report && report.weather)?.weather;
-                        let grandDailyTotal = 0;
                         return (
                             <tr key={date} className="hover:bg-gray-50">
                                 <td className="px-4 py-2 whitespace-nowrap text-sm text-gray-900 font-medium">{date}</td>
                                 <td className="px-2 py-4 text-center">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
                                 <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
                                 <td className="px-2 py-4 text-right">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
-                                {(() => {
-                                    let totalRow = {};
-                                    wasteFields.forEach(field => totalRow[field.key] = 0);
-                                    
-                                    stores.forEach(store => {
-                                        const report = storeData[store.name];
-                                        if (report) {
-                                            wasteFields.forEach(field => {
-                                                totalRow[field.key] += report[field.key] || 0;
-                                            });
-                                        }
-                                    });
-                                    wasteFields.forEach(field => grandDailyTotal += totalRow[field.key]);
-                                    
-                                    return (
-                                        <>
-                                            {wasteFields.map(field => renderCell(totalRow[field.key]))}
-                                            <td key={`${date}-total-grand`} className="px-2 py-2 whitespace-nowrap text-sm text-gray-600 text-right font-bold">{Math.round(grandDailyTotal).toLocaleString()}</td>
-                                        </>
-                                    );
-                                })()}
+                                {renderWasteCells(total)}
                                 {stores.map(store => {
                                     const report = storeData[store.name];
-                                    let dailyStoreTotal = 0;
-                                    wasteFields.forEach(field => dailyStoreTotal += report?.[field.key] || 0)
+                                    const storeDaily = report ? {
+                                        ...report,
+                                        total: sumWasteFields(report, false),
+                                        totalLy: sumWasteFields(report, true),
+                                    } : null;
                                     return (
                                         <React.Fragment key={`${date}-${store.id}`}>
-                                            {wasteFields.map(field => renderCell(report?.[field.key]))}
-                                            <td key={`${date}-${store.id}-total`} className="px-2 py-2 whitespace-nowrap text-sm text-gray-600 text-right font-bold">{Math.round(dailyStoreTotal).toLocaleString()}</td>
+                                            {renderWasteCells(storeDaily)}
                                         </React.Fragment>
                                     );
                                 })}
                             </tr>
-                        )
+                        );
                     })}
                 </tbody>
                 <tfoot className="bg-gray-200 font-bold">
                     <tr>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間合計</td>
-                        {wasteFields.map(field => renderCell(summary.total[field.key]))}
-                        {renderCell(summary.total.grandTotal)}
+                        {renderWasteCells(summary.total)}
                         {stores.map(store => (
                             <React.Fragment key={`${store.id}-total-footer`}>
-                                {wasteFields.map(field => renderCell(summary.storeTotals[store.name][field.key]))}
-                                {renderCell(summary.storeTotals[store.name].total)}
+                                {renderWasteCells(summary.storeTotals[store.name])}
                             </React.Fragment>
                         ))}
                     </tr>
-                      <tr>
+                    <tr>
                         <td className="px-4 py-3 whitespace-nowrap text-sm text-left" colSpan="4">期間平均</td>
-                        {wasteFields.map(field => renderCell(summary.average[field.key]))}
-                        {renderCell(summary.average.grandTotal)}
+                        {renderWasteCells(summary.average)}
                         {stores.map(store => (
                             <React.Fragment key={`${store.id}-avg-footer`}>
-                                {wasteFields.map(field => renderCell(summary.storeAverages[store.name][field.key]))}
-                                {renderCell(summary.storeAverages[store.name].total)}
+                                {renderWasteCells(summary.storeAverages[store.name])}
                             </React.Fragment>
                         ))}
                     </tr>
