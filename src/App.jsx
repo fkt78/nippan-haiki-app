@@ -1672,10 +1672,11 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             : { id: sectionId, label: sectionId, storeName: sectionId }
     ));
     const metricColSpan = visibleFieldMetrics.length * getYoYColSpan(tableConfig.yoyMode);
+    const detailWasteFields = wasteFields.filter(f => !f.isTotal);
 
     const sumWasteFields = (report, useLy = false) => {
         if (!report) return 0;
-        return wasteFields.filter(f => !f.isTotal).reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
+        return detailWasteFields.reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
     };
 
     const enrichRowData = (report) => {
@@ -1687,8 +1688,8 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         if (!raw) return null;
         return {
             ...raw,
-            total: raw.total ?? raw.grandTotal,
-            totalLy: raw.totalLy ?? raw.grandTotalLy,
+            total: raw.grandTotal != null ? raw.grandTotal : raw.total,
+            totalLy: raw.grandTotalLy != null ? raw.grandTotalLy : raw.totalLy,
         };
     };
 
@@ -1754,14 +1755,14 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
 
         const sortedData = Array.from(dataByDate.entries()).map(([date, data]) => {
             const total = { grandTotal: 0, grandTotalLy: 0 };
-            wasteFields.forEach(field => {
+            detailWasteFields.forEach(field => {
                 total[field.key] = 0;
                 total[field.lyKey] = 0;
             });
             stores.forEach(store => {
                 const report = data.storeData[store.name];
                 if (report) {
-                    wasteFields.forEach(field => {
+                    detailWasteFields.forEach(field => {
                         total[field.key] += report[field.key] || 0;
                         total[field.lyKey] += report[field.lyKey] || 0;
                     });
@@ -1779,7 +1780,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             storeAverages: {}
         };
 
-        wasteFields.forEach(field => {
+        detailWasteFields.forEach(field => {
             summary.total[field.key] = 0;
             summary.total[field.lyKey] = 0;
             summary.average[field.key] = 0;
@@ -1789,7 +1790,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         stores.forEach(store => {
             summary.storeTotals[store.name] = { total: 0, totalLy: 0 };
             summary.storeAverages[store.name] = { total: 0, totalLy: 0 };
-            wasteFields.forEach(field => {
+            detailWasteFields.forEach(field => {
                 summary.storeTotals[store.name][field.key] = 0;
                 summary.storeTotals[store.name][field.lyKey] = 0;
                 summary.storeAverages[store.name][field.key] = 0;
@@ -1798,7 +1799,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         });
 
         sortedData.forEach(row => {
-            wasteFields.forEach(field => {
+            detailWasteFields.forEach(field => {
                 summary.total[field.key] += row.total[field.key];
                 summary.total[field.lyKey] += row.total[field.lyKey];
             });
@@ -1808,7 +1809,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             stores.forEach(store => {
                 const report = row.storeData[store.name];
                 if (report) {
-                    wasteFields.forEach(field => {
+                    detailWasteFields.forEach(field => {
                         summary.storeTotals[store.name][field.key] += report[field.key] || 0;
                         summary.storeTotals[store.name][field.lyKey] += report[field.lyKey] || 0;
                     });
@@ -1818,7 +1819,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             });
         });
 
-        wasteFields.forEach(field => {
+        detailWasteFields.forEach(field => {
             summary.average[field.key] = summary.total[field.key] / dayCount;
             summary.average[field.lyKey] = summary.total[field.lyKey] / dayCount;
         });
@@ -1826,7 +1827,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         summary.average.grandTotalLy = summary.total.grandTotalLy / dayCount;
 
         stores.forEach(store => {
-            wasteFields.forEach(field => {
+            detailWasteFields.forEach(field => {
                 summary.storeAverages[store.name][field.key] = summary.storeTotals[store.name][field.key] / dayCount;
                 summary.storeAverages[store.name][field.lyKey] = summary.storeTotals[store.name][field.lyKey] / dayCount;
             });
