@@ -200,12 +200,15 @@ const enrichReportsWithWeekdayLy = (mergedReports, reportsLY) => {
         const lyDowDate = getSameWeekdayNearLastYearDate(cyDate);
         const lyDowStr = getLocalDateString(lyDowDate);
         const lyCalStr = getLocalDateString(getSameCalendarDateLastYear(cyDate));
+        const lyCalReport = lyLookup.get(`${lyCalStr}_${report.store}`);
         const lyDowReport = lyLookup.get(`${lyDowStr}_${report.store}`);
 
         const dowPatch = {
             lyDowCompareDate: lyDowStr,
             lyDateCompareDate: lyCalStr,
         };
+        if (lyCalReport?.weather) dowPatch.weather_ly = lyCalReport.weather;
+        if (lyDowReport?.weather) dowPatch.weather_ly_dow = lyDowReport.weather;
         if (lyDowReport) {
             dowPatch.sales_ly_dow = lyDowReport.sales;
             dowPatch.customers_ly_dow = lyDowReport.customers;
@@ -222,6 +225,115 @@ const enrichReportsWithWeekdayLy = (mergedReports, reportsLY) => {
 
 const buildTableCombinedReports = (reports, reportsLY) =>
     enrichReportsWithWeekdayLy(mergeCalendarYearLyReports(reports, reportsLY), reportsLY);
+
+const buildWeatherByDate = (reports) => {
+    const map = new Map();
+    reports.forEach(r => {
+        if (!r.date || !r.weather) return;
+        const dateStr = getLocalDateString(r.date.toDate());
+        if (!map.has(dateStr)) map.set(dateStr, r.weather);
+    });
+    return map;
+};
+
+const getLyWeatherColumnCount = (showLyWeather, lyCompareMode, yoyMode) => {
+    if (!showLyWeather || yoyMode === 'cy') return 0;
+    if (lyCompareMode === 'both') return 6;
+    return 3;
+};
+
+const getTableMetaColumnCount = (tableConfig) =>
+    3 + getLyWeatherColumnCount(tableConfig.showLyWeather, tableConfig.lyCompareMode, tableConfig.yoyMode);
+
+const resolveRowWeather = (storeData, pickKey) => {
+    const report = Object.values(storeData).find(r => r && r[pickKey]);
+    return report?.[pickKey] ?? null;
+};
+
+const WeatherMetaHeader = ({ label, subLabel, isPriorYear, isWeekdayLy = false }) => (
+    <th
+        rowSpan={3}
+        className={`px-2 py-3 text-center text-xs font-bold tracking-wider align-bottom border-b border-gray-200 ${isPriorYear ? 'text-gray-400 font-medium' : 'text-gray-500'} ${isPriorYear ? (isWeekdayLy ? 'bg-amber-50/80' : 'bg-slate-100') : 'bg-slate-100'}`}
+        style={isPriorYear ? (isWeekdayLy ? lyColumnHatchStyleDow : lyColumnHatchStyle) : undefined}
+    >
+        {subLabel && <div className="text-[10px] font-semibold leading-tight mb-0.5">{subLabel}</div>}
+        <div>{label}</div>
+    </th>
+);
+
+const WeatherMetaCells = ({ weather, isPriorYear = false, lyCompareKind = null, lyCompareDate = null, isWeekdayLy = false }) => {
+    const cellStyle = isPriorYear ? (isWeekdayLy ? lyColumnHatchStyleDow : lyColumnHatchStyle) : undefined;
+    const priorClass = isPriorYear ? 'text-gray-500' : 'text-gray-600';
+    const title = isPriorYear && lyCompareKind && lyCompareDate
+        ? (lyCompareKind === 'weekday'
+            ? `前年曜日: ${formatDateWithWeekday(lyCompareDate)}`
+            : `前年同日: ${formatDateWithWeekday(lyCompareDate)}`)
+        : undefined;
+    return (
+        <>
+            <td title={title} className={`px-2 py-3 text-center border-b border-gray-100 ${priorClass}`} style={cellStyle}>
+                {weather ? getWeatherIcon(weather.weatherCode) : '-'}
+            </td>
+            <td title={title} className={`px-2 py-3 text-right text-sm border-b border-gray-100 ${priorClass}`} style={cellStyle}>
+                {weather ? `${weather.maxTemp}°C` : '-'}
+            </td>
+            <td title={title} className={`px-2 py-3 text-right text-sm border-b border-gray-100 ${priorClass}`} style={cellStyle}>
+                {weather ? `${weather.precipitation}mm` : '-'}
+            </td>
+        </>
+    );
+};
+
+const renderWeatherMetaHeaders = (tableConfig) => {
+    const headers = [
+        <WeatherMetaHeader key="cy-weather" label="天気" subLabel="本年" />,
+        <WeatherMetaHeader key="cy-temp" label="気温" subLabel="本年" />,
+        <WeatherMetaHeader key="cy-precip" label="降水" subLabel="本年" />,
+    ];
+    if (!tableConfig.showLyWeather || tableConfig.yoyMode === 'cy') return headers;
+    if (tableConfig.lyCompareMode === 'date' || tableConfig.lyCompareMode === 'both') {
+        headers.push(
+            <WeatherMetaHeader key="ly-date-weather" label="天気" subLabel="前年同日" isPriorYear />,
+            <WeatherMetaHeader key="ly-date-temp" label="気温" subLabel="前年同日" isPriorYear />,
+            <WeatherMetaHeader key="ly-date-precip" label="降水" subLabel="前年同日" isPriorYear />,
+        );
+    }
+    if (tableConfig.lyCompareMode === 'weekday' || tableConfig.lyCompareMode === 'both') {
+        headers.push(
+            <WeatherMetaHeader key="ly-dow-weather" label="天気" subLabel="前年曜日" isPriorYear isWeekdayLy />,
+            <WeatherMetaHeader key="ly-dow-temp" label="気温" subLabel="前年曜日" isPriorYear isWeekdayLy />,
+            <WeatherMetaHeader key="ly-dow-precip" label="降水" subLabel="前年曜日" isPriorYear isWeekdayLy />,
+        );
+    }
+    return headers;
+};
+
+const renderWeatherMetaCells = (tableConfig, { storeData, date }) => {
+    const sampleReport = Object.values(storeData).find(r => r);
+    const dailyWeather = resolveRowWeather(storeData, 'weather');
+    const lyDateStr = sampleReport?.lyDateCompareDate
+        || getLocalDateString(getSameCalendarDateLastYear(new Date(`${date}T00:00:00`)));
+    const lyDowStr = sampleReport?.lyDowCompareDate
+        || getLocalDateString(getSameWeekdayNearLastYearDate(new Date(`${date}T00:00:00`)));
+    const weatherLy = resolveRowWeather(storeData, 'weather_ly') || tableConfig.weatherByDateLy?.get(lyDateStr) || null;
+    const weatherLyDow = resolveRowWeather(storeData, 'weather_ly_dow') || tableConfig.weatherByDateLy?.get(lyDowStr) || null;
+
+    const cells = [
+        <WeatherMetaCells key="cy" weather={dailyWeather} />,
+    ];
+    if (!tableConfig.showLyWeather || tableConfig.yoyMode === 'cy') return cells;
+    if (tableConfig.lyCompareMode === 'date' || tableConfig.lyCompareMode === 'both') {
+        cells.push(
+            <WeatherMetaCells key="ly-date" weather={weatherLy} isPriorYear lyCompareKind="date" lyCompareDate={lyDateStr} />
+        );
+    }
+    if (tableConfig.lyCompareMode === 'weekday' || tableConfig.lyCompareMode === 'both') {
+        cells.push(
+            <WeatherMetaCells key="ly-dow" weather={weatherLyDow} isPriorYear lyCompareKind="weekday" lyCompareDate={lyDowStr} isWeekdayLy />
+        );
+    }
+    return cells;
+};
 
 const getTimestampFromDateString = (dateString) => {
     const localDate = new Date(`${dateString}T00:00:00`);
@@ -1338,6 +1450,7 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     const [displayMode, setDisplayMode] = useState('focus');
     const [yoyMode, setYoyMode] = useState('both');
     const [lyCompareMode, setLyCompareMode] = useState('both');
+    const [showLyWeather, setShowLyWeather] = useState(false);
     const [selectedSections, setSelectedSections] = useState(() => ['total', ...stores.map(s => s.name)]);
     const [selectedNippoMetrics, setSelectedNippoMetrics] = useState(() => NIPPO_METRIC_OPTIONS.map(m => m.id));
     const [selectedHaikiMetrics, setSelectedHaikiMetrics] = useState(() => HAIKI_METRIC_OPTIONS.map(m => m.id));
@@ -1357,15 +1470,23 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
         }
     }, [view, stores]);
 
+    const combinedReports = useMemo(
+        () => buildTableCombinedReports(reports, reportsLY),
+        [reports, reportsLY]
+    );
+    const weatherByDateLy = useMemo(() => buildWeatherByDate(reportsLY), [reportsLY]);
+
     const tableConfig = useMemo(() => ({
         mode: displayMode,
         yoyMode,
         lyCompareMode,
+        showLyWeather,
+        weatherByDateLy,
         selectedSections: displayMode === 'detail' ? ['total', ...stores.map(s => s.name)] : selectedSections,
         selectedMetricIds: view === 'nippo'
             ? (displayMode === 'detail' ? NIPPO_METRIC_OPTIONS.map(m => m.id) : selectedNippoMetrics)
             : (displayMode === 'detail' ? HAIKI_METRIC_OPTIONS.map(m => m.id) : selectedHaikiMetrics),
-    }), [displayMode, yoyMode, lyCompareMode, selectedSections, selectedNippoMetrics, selectedHaikiMetrics, view, stores]);
+    }), [displayMode, yoyMode, lyCompareMode, showLyWeather, weatherByDateLy, selectedSections, selectedNippoMetrics, selectedHaikiMetrics, view, stores]);
 
     const toggleSection = (sectionId) => {
         setSelectedSections(prev => {
@@ -1384,11 +1505,6 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
 
     const metricOptions = view === 'nippo' ? NIPPO_METRIC_OPTIONS : HAIKI_METRIC_OPTIONS;
     const activeMetrics = view === 'nippo' ? selectedNippoMetrics : selectedHaikiMetrics;
-
-    const combinedReports = useMemo(
-        () => buildTableCombinedReports(reports, reportsLY),
-        [reports, reportsLY]
-    );
 
     if(isLoadingReports || isLoadingReportsLY) {
         return (
@@ -1455,6 +1571,16 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
                 )}
 
                 <div className="flex flex-wrap items-center gap-4 pt-1 border-t border-gray-100 text-xs text-gray-500">
+                    <label className={`inline-flex items-center gap-2 cursor-pointer ${yoyMode === 'cy' ? 'opacity-40 cursor-not-allowed' : ''}`}>
+                        <input
+                            type="checkbox"
+                            className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            checked={showLyWeather}
+                            disabled={yoyMode === 'cy'}
+                            onChange={(e) => setShowLyWeather(e.target.checked)}
+                        />
+                        前年の天気を表示
+                    </label>
                     <span><span className="inline-block w-3 h-3 rounded bg-blue-50 border border-blue-200 mr-1 align-middle"></span>選択中の項目を強調表示</span>
                     <span><span className="font-semibold text-gray-800">太字</span>＝本年</span>
                     <span className="inline-flex items-center gap-1">
@@ -1765,6 +1891,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
     );
 
     const stickyMetaClass = 'sticky z-20 bg-white';
+    const metaFooterColSpan = 1 + getTableMetaColumnCount(tableConfig);
     
     return (
         <div className="bg-white border border-gray-200 shadow-sm rounded-2xl overflow-hidden">
@@ -1773,9 +1900,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                 <thead className="sticky top-0 z-30">
                     <tr className="bg-slate-100">
                         <th rowSpan="3" className={`${stickyMetaClass} left-0 px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider align-bottom border-b border-gray-200`}>日付</th>
-                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">天気</th>
-                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">気温</th>
-                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">降水</th>
+                        {renderWeatherMetaHeaders(tableConfig)}
                         {visibleSections.map((section, index) => (
                             <th key={section.id} colSpan={metricColSpan} className={`px-4 py-2 text-center text-sm font-bold tracking-wide border-b border-l-2 ${index === 0 ? 'border-l-blue-300 text-blue-900 bg-blue-50' : 'border-l-gray-300 text-gray-700 bg-gray-50'}`}>
                                 {section.label}
@@ -1815,14 +1940,11 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                 </thead>
                 <tbody>
                     {tableData.map(({ date, storeData, total }, rowIndex) => {
-                        const dailyWeather = Object.values(storeData).find(report => report && report.weather)?.weather;
                         const rowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/70';
                         return (
                             <tr key={date} className={`${rowBg} hover:bg-blue-50/30 transition-colors`}>
                                 <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{formatDateWithWeekday(date)}</td>
-                                <td className="px-2 py-3 text-center border-b border-gray-100">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
-                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
-                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
+                                {renderWeatherMetaCells(tableConfig, { storeData, date })}
                                 {visibleSections.map(section => (
                                     <React.Fragment key={`${date}-${section.id}`}>
                                         {renderSectionMetrics(getSectionData(section, { storeData, total }))}
@@ -1834,7 +1956,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                 </tbody>
                 <tfoot className="sticky bottom-0 z-20">
                     <tr className="bg-gray-100 border-t-2 border-gray-300">
-                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 border-t-2 border-gray-300 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間合計</td>
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 border-t-2 border-gray-300 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan={metaFooterColSpan}>期間合計</td>
                         {visibleSections.map(section => (
                             <React.Fragment key={`${section.id}-sum`}>
                                 {renderSectionMetrics(getSectionData(section, {}, 'total'), true)}
@@ -1842,7 +1964,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                         ))}
                     </tr>
                     <tr className="bg-gray-200">
-                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間平均</td>
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan={metaFooterColSpan}>期間平均</td>
                         {visibleSections.map(section => (
                             <React.Fragment key={`${section.id}-avg`}>
                                 {renderSectionMetrics(getSectionData(section, {}, 'average'), true)}
@@ -2081,6 +2203,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
     }, [reports, stores, dateRange]);
 
     const stickyMetaClass = 'sticky z-20 bg-white';
+    const metaFooterColSpan = 1 + getTableMetaColumnCount(tableConfig);
 
     return (
          <div className="bg-white border border-gray-200 shadow-sm rounded-2xl overflow-hidden">
@@ -2089,9 +2212,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                 <thead className="sticky top-0 z-30">
                     <tr className="bg-slate-100">
                         <th rowSpan="3" className={`${stickyMetaClass} left-0 px-4 py-3 text-left text-xs font-bold text-gray-600 uppercase tracking-wider align-bottom border-b border-gray-200`}>日付</th>
-                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">天気</th>
-                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">気温</th>
-                        <th rowSpan="3" className="px-2 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider align-bottom border-b border-gray-200 bg-slate-100">降水</th>
+                        {renderWeatherMetaHeaders(tableConfig)}
                         {visibleSections.map((section, index) => (
                             <th key={section.id} colSpan={metricColSpan} className={`px-4 py-2 text-center text-sm font-bold tracking-wide border-b border-l-2 ${index === 0 ? 'border-l-blue-300 text-blue-900 bg-blue-50' : 'border-l-gray-300 text-gray-700 bg-gray-50'}`}>
                                 {section.label}
@@ -2130,14 +2251,11 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                 </thead>
                 <tbody>
                     {tableData.map(({ date, storeData, total }, rowIndex) => {
-                        const dailyWeather = Object.values(storeData).find(report => report && report.weather)?.weather;
                         const rowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/70';
                         return (
                             <tr key={date} className={`${rowBg} hover:bg-blue-50/30 transition-colors`}>
                                 <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{formatDateWithWeekday(date)}</td>
-                                <td className="px-2 py-3 text-center border-b border-gray-100">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
-                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
-                                <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
+                                {renderWeatherMetaCells(tableConfig, { storeData, date })}
                                 {visibleSections.map(section => (
                                     <React.Fragment key={`${date}-${section.id}`}>
                                         {renderHaikiMetrics(getSectionRowData(section, { storeData, total }))}
@@ -2149,7 +2267,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                 </tbody>
                 <tfoot className="sticky bottom-0 z-20">
                     <tr className="bg-gray-100 border-t-2 border-gray-300">
-                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 border-t-2 border-gray-300 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間合計</td>
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 border-t-2 border-gray-300 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan={metaFooterColSpan}>期間合計</td>
                         {visibleSections.map(section => (
                             <React.Fragment key={`${section.id}-sum`}>
                                 {renderHaikiMetrics(getSectionSummaryData(section, 'total'), true)}
@@ -2157,7 +2275,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                         ))}
                     </tr>
                     <tr className="bg-gray-200">
-                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan="4">期間平均</td>
+                        <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-800 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`} colSpan={metaFooterColSpan}>期間平均</td>
                         {visibleSections.map(section => (
                             <React.Fragment key={`${section.id}-avg`}>
                                 {renderHaikiMetrics(getSectionSummaryData(section, 'average'), true)}
