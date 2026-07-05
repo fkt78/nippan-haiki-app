@@ -101,6 +101,128 @@ const getLocalDateString = (date) => {
     return `${year}-${month}-${day}`;
 };
 
+const WEEKDAY_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
+
+const getWeekdayLabel = (date) => {
+    const d = date instanceof Date ? date : (date?.toDate ? date.toDate() : new Date(`${date}T00:00:00`));
+    return WEEKDAY_LABELS[d.getDay()];
+};
+
+const formatDateWithWeekday = (dateInput) => {
+    const dateStr = typeof dateInput === 'string' ? dateInput : getLocalDateString(dateInput);
+    const d = new Date(`${dateStr}T00:00:00`);
+    return `${dateStr} (${getWeekdayLabel(d)})`;
+};
+
+const parseLocalDate = (dateInput) => {
+    if (dateInput instanceof Date) return new Date(dateInput.getFullYear(), dateInput.getMonth(), dateInput.getDate());
+    if (dateInput?.toDate) return dateInput.toDate();
+    return new Date(`${dateInput}T00:00:00`);
+};
+
+const getSameCalendarDateLastYear = (cyDate) => {
+    const cy = parseLocalDate(cyDate);
+    return new Date(cy.getFullYear() - 1, cy.getMonth(), cy.getDate());
+};
+
+/** 前年の同日付付近で、本年と同じ曜日の日を返す（±3日以内） */
+const getSameWeekdayNearLastYearDate = (cyDate) => {
+    const cy = parseLocalDate(cyDate);
+    const anchor = new Date(cy.getFullYear() - 1, cy.getMonth(), cy.getDate());
+    const targetDow = cy.getDay();
+    let best = anchor;
+    let bestDiff = 7;
+    for (let offset = -3; offset <= 3; offset++) {
+        const d = new Date(anchor);
+        d.setDate(anchor.getDate() + offset);
+        if (d.getDay() === targetDow) {
+            const diff = Math.abs(offset);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                best = d;
+            }
+        }
+    }
+    return best;
+};
+
+const getExtendedLyFetchRange = (startDateLY, endDateLY) => {
+    const start = new Date(startDateLY);
+    start.setDate(start.getDate() - 7);
+    const end = new Date(endDateLY);
+    end.setDate(end.getDate() + 7);
+    return { start, end };
+};
+
+const mergeCalendarYearLyReports = (reports, reportsLY) => {
+    const lyData = reportsLY.map(r => {
+        if (!r.date) return null;
+        const lyDate = r.date.toDate();
+        const cyDate = new Date(lyDate.getFullYear() + 1, lyDate.getMonth(), lyDate.getDate());
+        return {
+            date: Timestamp.fromDate(cyDate),
+            store: r.store,
+            sales_ly: r.sales,
+            customers_ly: r.customers,
+            customer_spend_ly: r.customer_spend,
+            waste_product_ly: r.waste_product,
+            waste_owner_8_ly: r.waste_owner_8,
+            waste_owner_10_ly: r.waste_owner_10,
+            waste_promo_8_ly: r.waste_promo_8,
+            waste_promo_10_ly: r.waste_promo_10,
+        };
+    }).filter(Boolean);
+
+    const reportsById = new Map();
+    reports.forEach(r => {
+        reportsById.set(r.id, r);
+    });
+    lyData.forEach(r_ly => {
+        const cyDateStr = getLocalDateString(r_ly.date.toDate());
+        const docId = `${cyDateStr}_${r_ly.store}`;
+        const existingReport = reportsById.get(docId) || { id: docId, date: r_ly.date, store: r_ly.store };
+        reportsById.set(docId, { ...existingReport, ...r_ly });
+    });
+
+    return Array.from(reportsById.values());
+};
+
+const enrichReportsWithWeekdayLy = (mergedReports, reportsLY) => {
+    const lyLookup = new Map();
+    reportsLY.forEach(r => {
+        if (!r.date || !r.store) return;
+        lyLookup.set(`${getLocalDateString(r.date.toDate())}_${r.store}`, r);
+    });
+
+    return mergedReports.map(report => {
+        if (!report.date) return report;
+        const cyDate = report.date.toDate();
+        const lyDowDate = getSameWeekdayNearLastYearDate(cyDate);
+        const lyDowStr = getLocalDateString(lyDowDate);
+        const lyCalStr = getLocalDateString(getSameCalendarDateLastYear(cyDate));
+        const lyDowReport = lyLookup.get(`${lyDowStr}_${report.store}`);
+
+        const dowPatch = {
+            lyDowCompareDate: lyDowStr,
+            lyDateCompareDate: lyCalStr,
+        };
+        if (lyDowReport) {
+            dowPatch.sales_ly_dow = lyDowReport.sales;
+            dowPatch.customers_ly_dow = lyDowReport.customers;
+            dowPatch.customer_spend_ly_dow = lyDowReport.customer_spend ?? (lyDowReport.customers > 0 ? lyDowReport.sales / lyDowReport.customers : undefined);
+            dowPatch.waste_product_ly_dow = lyDowReport.waste_product;
+            dowPatch.waste_owner_8_ly_dow = lyDowReport.waste_owner_8;
+            dowPatch.waste_owner_10_ly_dow = lyDowReport.waste_owner_10;
+            dowPatch.waste_promo_8_ly_dow = lyDowReport.waste_promo_8;
+            dowPatch.waste_promo_10_ly_dow = lyDowReport.waste_promo_10;
+        }
+        return { ...report, ...dowPatch };
+    });
+};
+
+const buildTableCombinedReports = (reports, reportsLY) =>
+    enrichReportsWithWeekdayLy(mergeCalendarYearLyReports(reports, reportsLY), reportsLY);
+
 const getTimestampFromDateString = (dateString) => {
     const localDate = new Date(`${dateString}T00:00:00`);
     return Timestamp.fromDate(localDate);
@@ -1215,11 +1337,16 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     const [view, setView] = useState('nippo');
     const [displayMode, setDisplayMode] = useState('focus');
     const [yoyMode, setYoyMode] = useState('both');
+    const [lyCompareMode, setLyCompareMode] = useState('both');
     const [selectedSections, setSelectedSections] = useState(() => ['total', ...stores.map(s => s.name)]);
     const [selectedNippoMetrics, setSelectedNippoMetrics] = useState(() => NIPPO_METRIC_OPTIONS.map(m => m.id));
     const [selectedHaikiMetrics, setSelectedHaikiMetrics] = useState(() => HAIKI_METRIC_OPTIONS.map(m => m.id));
+    const lyFetchRange = useMemo(
+        () => getExtendedLyFetchRange(dateRange.startDateLY, dateRange.endDateLY),
+        [dateRange.startDateLY, dateRange.endDateLY]
+    );
     const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
-    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
+    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(lyFetchRange.start, lyFetchRange.end, onRefresh);
 
     useEffect(() => {
         setSelectedSections(['total', ...stores.map(s => s.name)]);
@@ -1233,11 +1360,12 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     const tableConfig = useMemo(() => ({
         mode: displayMode,
         yoyMode,
+        lyCompareMode,
         selectedSections: displayMode === 'detail' ? ['total', ...stores.map(s => s.name)] : selectedSections,
         selectedMetricIds: view === 'nippo'
             ? (displayMode === 'detail' ? NIPPO_METRIC_OPTIONS.map(m => m.id) : selectedNippoMetrics)
             : (displayMode === 'detail' ? HAIKI_METRIC_OPTIONS.map(m => m.id) : selectedHaikiMetrics),
-    }), [displayMode, yoyMode, selectedSections, selectedNippoMetrics, selectedHaikiMetrics, view, stores]);
+    }), [displayMode, yoyMode, lyCompareMode, selectedSections, selectedNippoMetrics, selectedHaikiMetrics, view, stores]);
 
     const toggleSection = (sectionId) => {
         setSelectedSections(prev => {
@@ -1257,38 +1385,10 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     const metricOptions = view === 'nippo' ? NIPPO_METRIC_OPTIONS : HAIKI_METRIC_OPTIONS;
     const activeMetrics = view === 'nippo' ? selectedNippoMetrics : selectedHaikiMetrics;
 
-    const combinedReports = useMemo(() => {
-        const lyData = reportsLY.map(r => {
-            if (!r.date) return null;
-            const lyDate = r.date.toDate();
-            const cyDate = new Date(lyDate.getFullYear() + 1, lyDate.getMonth(), lyDate.getDate());
-            return {
-                date: Timestamp.fromDate(cyDate),
-                store: r.store,
-                sales_ly: r.sales,
-                customers_ly: r.customers,
-                customer_spend_ly: r.customer_spend,
-                waste_product_ly: r.waste_product,
-                waste_owner_8_ly: r.waste_owner_8,
-                waste_owner_10_ly: r.waste_owner_10,
-                waste_promo_8_ly: r.waste_promo_8,
-                waste_promo_10_ly: r.waste_promo_10,
-            };
-        }).filter(Boolean);
-
-        const reportsById = new Map();
-        reports.forEach(r => {
-            reportsById.set(r.id, r);
-        });
-        lyData.forEach(r_ly => {
-            const cyDateStr = getLocalDateString(r_ly.date.toDate());
-            const docId = `${cyDateStr}_${r_ly.store}`;
-            const existingReport = reportsById.get(docId) || { id: docId, date: r_ly.date, store: r_ly.store };
-            reportsById.set(docId, { ...existingReport, ...r_ly });
-        });
-        
-        return Array.from(reportsById.values());
-    }, [reports, reportsLY]);
+    const combinedReports = useMemo(
+        () => buildTableCombinedReports(reports, reportsLY),
+        [reports, reportsLY]
+    );
 
     if(isLoadingReports || isLoadingReportsLY) {
         return (
@@ -1323,6 +1423,13 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
                         <button onClick={() => setYoyMode('cy')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${yoyMode === 'cy' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>本年のみ</button>
                         <button onClick={() => setYoyMode('ly')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${yoyMode === 'ly' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>前年のみ</button>
                     </div>
+                    {yoyMode !== 'cy' && (
+                        <div className="flex p-1 bg-gray-100 rounded-lg">
+                            <button onClick={() => setLyCompareMode('date')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${lyCompareMode === 'date' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>前年同日</button>
+                            <button onClick={() => setLyCompareMode('weekday')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${lyCompareMode === 'weekday' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>前年曜日</button>
+                            <button onClick={() => setLyCompareMode('both')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${lyCompareMode === 'both' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>同日+曜日</button>
+                        </div>
+                    )}
                 </div>
 
                 {displayMode === 'focus' && (
@@ -1352,8 +1459,9 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
                     <span><span className="font-semibold text-gray-800">太字</span>＝本年</span>
                     <span className="inline-flex items-center gap-1">
                         <span className="inline-block w-8 h-3 rounded border border-gray-200" style={lyColumnHatchStyle}></span>
-                        ＝前年
+                        ＝前年（同日 / 曜日）
                     </span>
+                    <span>前年曜日＝前年の同日付付近で同じ曜日の日（セルにホバーで対比日表示）</span>
                 </div>
             </div>
 
@@ -1366,6 +1474,10 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
 
 const lyColumnHatchStyle = {
     backgroundImage: 'repeating-linear-gradient(-45deg, rgba(241,245,249,1) 0px, rgba(241,245,249,1) 4px, rgba(203,213,225,0.45) 4px, rgba(203,213,225,0.45) 8px)',
+};
+
+const lyColumnHatchStyleDow = {
+    backgroundImage: 'repeating-linear-gradient(-45deg, rgba(255,251,235,1) 0px, rgba(255,251,235,1) 4px, rgba(251,191,36,0.25) 4px, rgba(251,191,36,0.25) 8px)',
 };
 
 const formatTableValue = (value, prefix = '') => (
@@ -1397,14 +1509,20 @@ const YoYTableHeader = ({ label, isPriorYear, className = '', highlighted = fals
     );
 };
 
-const YoYTableCell = ({ value, isPriorYear, prefix = '', isFooter = false, highlighted = false }) => {
+const YoYTableCell = ({ value, isPriorYear, prefix = '', isFooter = false, highlighted = false, lyCompareKind = null, lyCompareDate = null, cellStyle = lyColumnHatchStyle }) => {
     const display = formatTableValue(value, prefix);
     const padding = isFooter ? 'py-3' : 'py-2.5';
+    const title = isPriorYear && lyCompareKind && lyCompareDate
+        ? (lyCompareKind === 'weekday'
+            ? `前年曜日比: ${formatDateWithWeekday(lyCompareDate)}`
+            : `前年同日: ${formatDateWithWeekday(lyCompareDate)}`)
+        : undefined;
     if (isPriorYear) {
         return (
             <td
+                title={title}
                 className={`px-3 ${padding} whitespace-nowrap text-sm font-normal text-gray-500 text-right tabular-nums ${highlighted ? 'bg-blue-50/80' : 'bg-slate-50'}`}
-                style={lyColumnHatchStyle}
+                style={cellStyle}
             >
                 {display}
             </td>
@@ -1417,19 +1535,83 @@ const YoYTableCell = ({ value, isPriorYear, prefix = '', isFooter = false, highl
     );
 };
 
-const getYoYColSpan = (yoyMode) => (yoyMode === 'both' ? 2 : 1);
+const getYoYColSpan = (yoyMode, lyCompareMode = 'date') => {
+    let cols = 0;
+    if (yoyMode !== 'ly') cols += 1;
+    if (yoyMode !== 'cy') {
+        if (lyCompareMode === 'both') cols += 2;
+        else cols += 1;
+    }
+    return cols;
+};
 
-const renderYoYCellsForMetric = ({ data, cyKey, lyKey, prefix = '', yoyMode, highlighted = false, isFooter = false }) => {
+const renderYoYCellsForMetric = ({ data, cyKey, lyKey, prefix = '', yoyMode, lyCompareMode = 'date', highlighted = false, isFooter = false }) => {
     const cells = [];
-    if (yoyMode !== 'ly') cells.push(<YoYTableCell key={`${cyKey}-cy`} value={data?.[cyKey]} isPriorYear={false} prefix={prefix} isFooter={isFooter} highlighted={highlighted} />);
-    if (yoyMode !== 'cy') cells.push(<YoYTableCell key={`${cyKey}-ly`} value={data?.[lyKey]} isPriorYear={true} prefix={prefix} isFooter={isFooter} highlighted={highlighted} />);
+    if (yoyMode !== 'ly') {
+        cells.push(<YoYTableCell key={`${cyKey}-cy`} value={data?.[cyKey]} isPriorYear={false} prefix={prefix} isFooter={isFooter} highlighted={highlighted} />);
+    }
+    if (yoyMode !== 'cy') {
+        if (lyCompareMode === 'date' || lyCompareMode === 'both') {
+            cells.push(
+                <YoYTableCell
+                    key={`${cyKey}-ly-date`}
+                    value={data?.[lyKey]}
+                    isPriorYear={true}
+                    prefix={prefix}
+                    isFooter={isFooter}
+                    highlighted={highlighted}
+                    lyCompareKind="date"
+                    lyCompareDate={isFooter ? null : data?.lyDateCompareDate}
+                />
+            );
+        }
+        if (lyCompareMode === 'weekday' || lyCompareMode === 'both') {
+            cells.push(
+                <YoYTableCell
+                    key={`${cyKey}-ly-dow`}
+                    value={data?.[`${lyKey}_dow`]}
+                    isPriorYear={true}
+                    prefix={prefix}
+                    isFooter={isFooter}
+                    highlighted={highlighted}
+                    lyCompareKind="weekday"
+                    lyCompareDate={isFooter ? null : data?.lyDowCompareDate}
+                    cellStyle={lyCompareMode === 'both' ? lyColumnHatchStyleDow : lyColumnHatchStyle}
+                />
+            );
+        }
+    }
     return cells;
 };
 
-const renderYoYHeadersForMetric = ({ cyLabel, lyLabel, yoyMode, highlighted = false, compact = true }) => {
+const renderYoYHeadersForMetric = ({ cyLabel, lyLabel, yoyMode, lyCompareMode = 'date', highlighted = false, compact = true }) => {
     const headers = [];
     if (yoyMode !== 'ly') headers.push(<YoYTableHeader key={`${cyLabel}-cy`} label={cyLabel} isPriorYear={false} highlighted={highlighted} compact={compact} />);
-    if (yoyMode !== 'cy') headers.push(<YoYTableHeader key={`${cyLabel}-ly`} label={lyLabel} isPriorYear={true} highlighted={highlighted} compact={compact} />);
+    if (yoyMode !== 'cy') {
+        if (lyCompareMode === 'date' || lyCompareMode === 'both') {
+            headers.push(
+                <YoYTableHeader
+                    key={`${cyLabel}-ly-date`}
+                    label={lyCompareMode === 'both' ? '前年同日' : (compact ? '前年' : lyLabel)}
+                    isPriorYear={true}
+                    highlighted={highlighted}
+                    compact={compact}
+                />
+            );
+        }
+        if (lyCompareMode === 'weekday' || lyCompareMode === 'both') {
+            headers.push(
+                <YoYTableHeader
+                    key={`${cyLabel}-ly-dow`}
+                    label={lyCompareMode === 'both' ? '前年曜日' : (compact ? '前年曜' : `${lyLabel}(曜)`)}
+                    isPriorYear={true}
+                    highlighted={highlighted}
+                    compact={compact}
+                    className={lyCompareMode === 'both' ? 'bg-amber-50/80' : ''}
+                />
+            );
+        }
+    }
     return headers;
 };
 
@@ -1447,7 +1629,12 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
         });
 
         const sortedData = Array.from(dataByDate.entries()).map(([date, data]) => {
-            const total = { sales: 0, customers: 0, sales_ly: 0, customers_ly: 0 };
+            const total = {
+                sales: 0, customers: 0, sales_ly: 0, customers_ly: 0,
+                sales_ly_dow: 0, customers_ly_dow: 0,
+                lyDateCompareDate: getLocalDateString(getSameCalendarDateLastYear(new Date(`${date}T00:00:00`))),
+                lyDowCompareDate: getLocalDateString(getSameWeekdayNearLastYearDate(new Date(`${date}T00:00:00`))),
+            };
             stores.forEach(store => {
                 const report = data.storeData[store.name];
                 if (report) {
@@ -1455,20 +1642,23 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                     total.customers += report.customers || 0;
                     total.sales_ly += report.sales_ly || 0;
                     total.customers_ly += report.customers_ly || 0;
+                    total.sales_ly_dow += report.sales_ly_dow || 0;
+                    total.customers_ly_dow += report.customers_ly_dow || 0;
                 }
             });
             total.customer_spend = total.customers > 0 ? total.sales / total.customers : 0;
             total.customer_spend_ly = total.customers_ly > 0 ? total.sales_ly / total.customers_ly : 0;
+            total.customer_spend_ly_dow = total.customers_ly_dow > 0 ? total.sales_ly_dow / total.customers_ly_dow : 0;
             data.total = total;
             return { date, ...data };
         }).sort((a, b) => new Date(a.date) - new Date(b.date));
         
         const grandTotal = {
-            total: { sales: 0, customers: 0, sales_ly: 0, customers_ly: 0 },
+            total: { sales: 0, customers: 0, sales_ly: 0, customers_ly: 0, sales_ly_dow: 0, customers_ly_dow: 0 },
             storeTotals: {}
         };
         stores.forEach(store => {
-            grandTotal.storeTotals[store.name] = { sales: 0, customers: 0, sales_ly: 0, customers_ly: 0 };
+            grandTotal.storeTotals[store.name] = { sales: 0, customers: 0, sales_ly: 0, customers_ly: 0, sales_ly_dow: 0, customers_ly_dow: 0 };
         });
 
         sortedData.forEach(row => {
@@ -1476,6 +1666,8 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
             grandTotal.total.customers += row.total.customers;
             grandTotal.total.sales_ly += row.total.sales_ly;
             grandTotal.total.customers_ly += row.total.customers_ly;
+            grandTotal.total.sales_ly_dow += row.total.sales_ly_dow;
+            grandTotal.total.customers_ly_dow += row.total.customers_ly_dow;
 
             stores.forEach(store => {
                 const report = row.storeData[store.name];
@@ -1484,6 +1676,8 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                     grandTotal.storeTotals[store.name].customers += report.customers || 0;
                     grandTotal.storeTotals[store.name].sales_ly += report.sales_ly || 0;
                     grandTotal.storeTotals[store.name].customers_ly += report.customers_ly || 0;
+                    grandTotal.storeTotals[store.name].sales_ly_dow += report.sales_ly_dow || 0;
+                    grandTotal.storeTotals[store.name].customers_ly_dow += report.customers_ly_dow || 0;
                 }
             });
         });
@@ -1496,18 +1690,23 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                 customers: grandTotal.total.customers / dayCount,
                 sales_ly: grandTotal.total.sales_ly / dayCount,
                 customers_ly: grandTotal.total.customers_ly / dayCount,
+                sales_ly_dow: grandTotal.total.sales_ly_dow / dayCount,
+                customers_ly_dow: grandTotal.total.customers_ly_dow / dayCount,
             },
             storeTotals: {}
         };
 
         grandTotal.total.customer_spend = grandTotal.total.customers > 0 ? grandTotal.total.sales / grandTotal.total.customers : 0;
         grandTotal.total.customer_spend_ly = grandTotal.total.customers_ly > 0 ? grandTotal.total.sales_ly / grandTotal.total.customers_ly : 0;
+        grandTotal.total.customer_spend_ly_dow = grandTotal.total.customers_ly_dow > 0 ? grandTotal.total.sales_ly_dow / grandTotal.total.customers_ly_dow : 0;
         grandAverage.total.customer_spend = grandAverage.total.customers > 0 ? grandAverage.total.sales / grandAverage.total.customers : 0;
         grandAverage.total.customer_spend_ly = grandAverage.total.customers_ly > 0 ? grandAverage.total.sales_ly / grandAverage.total.customers_ly : 0;
+        grandAverage.total.customer_spend_ly_dow = grandAverage.total.customers_ly_dow > 0 ? grandAverage.total.sales_ly_dow / grandAverage.total.customers_ly_dow : 0;
         
         stores.forEach(store => {
              grandTotal.storeTotals[store.name].customer_spend = grandTotal.storeTotals[store.name].customers > 0 ? grandTotal.storeTotals[store.name].sales / grandTotal.storeTotals[store.name].customers : 0;
              grandTotal.storeTotals[store.name].customer_spend_ly = grandTotal.storeTotals[store.name].customers_ly > 0 ? grandTotal.storeTotals[store.name].sales_ly / grandTotal.storeTotals[store.name].customers_ly : 0;
+             grandTotal.storeTotals[store.name].customer_spend_ly_dow = grandTotal.storeTotals[store.name].customers_ly_dow > 0 ? grandTotal.storeTotals[store.name].sales_ly_dow / grandTotal.storeTotals[store.name].customers_ly_dow : 0;
             
              const storeTotal = grandTotal.storeTotals[store.name];
              grandAverage.storeTotals[store.name] = {
@@ -1515,10 +1714,13 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                  customers: storeTotal.customers / dayCount,
                  sales_ly: storeTotal.sales_ly / dayCount,
                  customers_ly: storeTotal.customers_ly / dayCount,
+                 sales_ly_dow: storeTotal.sales_ly_dow / dayCount,
+                 customers_ly_dow: storeTotal.customers_ly_dow / dayCount,
              };
              const storeAvg = grandAverage.storeTotals[store.name];
              storeAvg.customer_spend = storeAvg.customers > 0 ? storeAvg.sales / storeAvg.customers : 0;
              storeAvg.customer_spend_ly = storeAvg.customers_ly > 0 ? storeAvg.sales_ly / storeAvg.customers_ly : 0;
+             storeAvg.customer_spend_ly_dow = storeAvg.customers_ly_dow > 0 ? storeAvg.sales_ly_dow / storeAvg.customers_ly_dow : 0;
         });
 
         return { tableData: sortedData, grandTotal, grandAverage };
@@ -1536,7 +1738,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
             ? { id: 'total', label: '3店合計' }
             : { id: sectionId, label: sectionId, storeName: sectionId }
     ));
-    const metricColSpan = visibleMetrics.length * getYoYColSpan(tableConfig.yoyMode);
+    const metricColSpan = visibleMetrics.length * getYoYColSpan(tableConfig.yoyMode, tableConfig.lyCompareMode);
 
     const getSectionData = (section, rowData, summaryType) => {
         if (section.id === 'total') {
@@ -1556,6 +1758,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
             lyKey: metric.lyKey,
             prefix: metric.prefix,
             yoyMode: tableConfig.yoyMode,
+            lyCompareMode: tableConfig.lyCompareMode,
             highlighted: tableConfig.mode === 'focus',
             isFooter,
         }))
@@ -1586,7 +1789,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                                     <React.Fragment key={`${section.id}-${metric.id}`}>
                                         <YoYMetricGroupHeader
                                             label={metric.cyLabel}
-                                            colSpan={getYoYColSpan(tableConfig.yoyMode)}
+                                            colSpan={getYoYColSpan(tableConfig.yoyMode, tableConfig.lyCompareMode)}
                                             highlighted={tableConfig.mode === 'focus'}
                                             isFirst={sectionIndex === 0 && metricIndex === 0}
                                         />
@@ -1602,6 +1805,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                                     cyLabel: metric.cyLabel,
                                     lyLabel: metric.lyLabel,
                                     yoyMode: tableConfig.yoyMode,
+                                    lyCompareMode: tableConfig.lyCompareMode,
                                     highlighted: tableConfig.mode === 'focus',
                                     compact: true,
                                 }))}
@@ -1615,7 +1819,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                         const rowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/70';
                         return (
                             <tr key={date} className={`${rowBg} hover:bg-blue-50/30 transition-colors`}>
-                                <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{date}</td>
+                                <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{formatDateWithWeekday(date)}</td>
                                 <td className="px-2 py-3 text-center border-b border-gray-100">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
                                 <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
                                 <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
@@ -1671,17 +1875,27 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             ? { id: 'total', label: '3店合計' }
             : { id: sectionId, label: sectionId, storeName: sectionId }
     ));
-    const metricColSpan = visibleFieldMetrics.length * getYoYColSpan(tableConfig.yoyMode);
+    const metricColSpan = visibleFieldMetrics.length * getYoYColSpan(tableConfig.yoyMode, tableConfig.lyCompareMode);
     const detailWasteFields = wasteFields.filter(f => !f.isTotal);
 
-    const sumWasteFields = (report, useLy = false) => {
+    const sumWasteFields = (report, variant = 'cy') => {
         if (!report) return 0;
-        return detailWasteFields.reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
+        return detailWasteFields.reduce((sum, field) => {
+            let key = field.key;
+            if (variant === 'date') key = field.lyKey;
+            if (variant === 'dow') key = `${field.key}_ly_dow`;
+            return sum + (report[key] || 0);
+        }, 0);
     };
 
     const enrichRowData = (report) => {
         if (!report) return null;
-        return { ...report, total: sumWasteFields(report, false), totalLy: sumWasteFields(report, true) };
+        return {
+            ...report,
+            total: sumWasteFields(report, 'cy'),
+            totalLy: sumWasteFields(report, 'date'),
+            totalLy_dow: sumWasteFields(report, 'dow'),
+        };
     };
 
     const normalizeHaikiData = (raw) => {
@@ -1690,6 +1904,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             ...raw,
             total: raw.grandTotal != null ? raw.grandTotal : raw.total,
             totalLy: raw.grandTotalLy != null ? raw.grandTotalLy : raw.totalLy,
+            totalLy_dow: raw.grandTotalLy_dow != null ? raw.grandTotalLy_dow : raw.totalLy_dow,
         };
     };
 
@@ -1714,6 +1929,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                     cyKey: 'total',
                     lyKey: 'totalLy',
                     yoyMode: tableConfig.yoyMode,
+                    lyCompareMode: tableConfig.lyCompareMode,
                     highlighted: tableConfig.mode === 'focus',
                     isFooter,
                 });
@@ -1723,6 +1939,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                 cyKey: field.key,
                 lyKey: field.lyKey,
                 yoyMode: tableConfig.yoyMode,
+                lyCompareMode: tableConfig.lyCompareMode,
                 highlighted: tableConfig.mode === 'focus',
                 isFooter,
             });
@@ -1754,10 +1971,15 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         });
 
         const sortedData = Array.from(dataByDate.entries()).map(([date, data]) => {
-            const total = { grandTotal: 0, grandTotalLy: 0 };
+            const total = {
+                grandTotal: 0, grandTotalLy: 0, grandTotalLy_dow: 0,
+                lyDateCompareDate: getLocalDateString(getSameCalendarDateLastYear(new Date(`${date}T00:00:00`))),
+                lyDowCompareDate: getLocalDateString(getSameWeekdayNearLastYearDate(new Date(`${date}T00:00:00`))),
+            };
             detailWasteFields.forEach(field => {
                 total[field.key] = 0;
                 total[field.lyKey] = 0;
+                total[`${field.key}_ly_dow`] = 0;
             });
             stores.forEach(store => {
                 const report = data.storeData[store.name];
@@ -1765,17 +1987,21 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                     detailWasteFields.forEach(field => {
                         total[field.key] += report[field.key] || 0;
                         total[field.lyKey] += report[field.lyKey] || 0;
+                        total[`${field.key}_ly_dow`] += report[`${field.key}_ly_dow`] || 0;
                     });
-                    total.grandTotal += sumWasteFields(report, false);
-                    total.grandTotalLy += sumWasteFields(report, true);
+                    total.grandTotal += sumWasteFields(report, 'cy');
+                    total.grandTotalLy += sumWasteFields(report, 'date');
+                    total.grandTotalLy_dow += sumWasteFields(report, 'dow');
                 }
             });
+            total.totalLy = total.grandTotalLy;
+            total.totalLy_dow = total.grandTotalLy_dow;
             return { date, ...data, total };
         }).sort((a, b) => new Date(a.date) - new Date(b.date));
 
         const summary = {
-            total: { grandTotal: 0, grandTotalLy: 0 },
-            average: { grandTotal: 0, grandTotalLy: 0 },
+            total: { grandTotal: 0, grandTotalLy: 0, grandTotalLy_dow: 0, totalLy: 0, totalLy_dow: 0 },
+            average: { grandTotal: 0, grandTotalLy: 0, grandTotalLy_dow: 0, totalLy: 0, totalLy_dow: 0 },
             storeTotals: {},
             storeAverages: {}
         };
@@ -1783,18 +2009,22 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         detailWasteFields.forEach(field => {
             summary.total[field.key] = 0;
             summary.total[field.lyKey] = 0;
+            summary.total[`${field.key}_ly_dow`] = 0;
             summary.average[field.key] = 0;
             summary.average[field.lyKey] = 0;
+            summary.average[`${field.key}_ly_dow`] = 0;
         });
 
         stores.forEach(store => {
-            summary.storeTotals[store.name] = { total: 0, totalLy: 0 };
-            summary.storeAverages[store.name] = { total: 0, totalLy: 0 };
+            summary.storeTotals[store.name] = { total: 0, totalLy: 0, totalLy_dow: 0 };
+            summary.storeAverages[store.name] = { total: 0, totalLy: 0, totalLy_dow: 0 };
             detailWasteFields.forEach(field => {
                 summary.storeTotals[store.name][field.key] = 0;
                 summary.storeTotals[store.name][field.lyKey] = 0;
+                summary.storeTotals[store.name][`${field.key}_ly_dow`] = 0;
                 summary.storeAverages[store.name][field.key] = 0;
                 summary.storeAverages[store.name][field.lyKey] = 0;
+                summary.storeAverages[store.name][`${field.key}_ly_dow`] = 0;
             });
         });
 
@@ -1802,9 +2032,11 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
             detailWasteFields.forEach(field => {
                 summary.total[field.key] += row.total[field.key];
                 summary.total[field.lyKey] += row.total[field.lyKey];
+                summary.total[`${field.key}_ly_dow`] += row.total[`${field.key}_ly_dow`];
             });
             summary.total.grandTotal += row.total.grandTotal;
             summary.total.grandTotalLy += row.total.grandTotalLy;
+            summary.total.grandTotalLy_dow += row.total.grandTotalLy_dow;
 
             stores.forEach(store => {
                 const report = row.storeData[store.name];
@@ -1812,9 +2044,11 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                     detailWasteFields.forEach(field => {
                         summary.storeTotals[store.name][field.key] += report[field.key] || 0;
                         summary.storeTotals[store.name][field.lyKey] += report[field.lyKey] || 0;
+                        summary.storeTotals[store.name][`${field.key}_ly_dow`] += report[`${field.key}_ly_dow`] || 0;
                     });
-                    summary.storeTotals[store.name].total += sumWasteFields(report, false);
-                    summary.storeTotals[store.name].totalLy += sumWasteFields(report, true);
+                    summary.storeTotals[store.name].total += sumWasteFields(report, 'cy');
+                    summary.storeTotals[store.name].totalLy += sumWasteFields(report, 'date');
+                    summary.storeTotals[store.name].totalLy_dow += sumWasteFields(report, 'dow');
                 }
             });
         });
@@ -1822,17 +2056,25 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
         detailWasteFields.forEach(field => {
             summary.average[field.key] = summary.total[field.key] / dayCount;
             summary.average[field.lyKey] = summary.total[field.lyKey] / dayCount;
+            summary.average[`${field.key}_ly_dow`] = summary.total[`${field.key}_ly_dow`] / dayCount;
         });
         summary.average.grandTotal = summary.total.grandTotal / dayCount;
         summary.average.grandTotalLy = summary.total.grandTotalLy / dayCount;
+        summary.average.grandTotalLy_dow = summary.total.grandTotalLy_dow / dayCount;
+        summary.total.totalLy = summary.total.grandTotalLy;
+        summary.total.totalLy_dow = summary.total.grandTotalLy_dow;
+        summary.average.totalLy = summary.average.grandTotalLy;
+        summary.average.totalLy_dow = summary.average.grandTotalLy_dow;
 
         stores.forEach(store => {
             detailWasteFields.forEach(field => {
                 summary.storeAverages[store.name][field.key] = summary.storeTotals[store.name][field.key] / dayCount;
                 summary.storeAverages[store.name][field.lyKey] = summary.storeTotals[store.name][field.lyKey] / dayCount;
+                summary.storeAverages[store.name][`${field.key}_ly_dow`] = summary.storeTotals[store.name][`${field.key}_ly_dow`] / dayCount;
             });
             summary.storeAverages[store.name].total = summary.storeTotals[store.name].total / dayCount;
             summary.storeAverages[store.name].totalLy = summary.storeTotals[store.name].totalLy / dayCount;
+            summary.storeAverages[store.name].totalLy_dow = summary.storeTotals[store.name].totalLy_dow / dayCount;
         });
 
         return { tableData: sortedData, summary };
@@ -1863,7 +2105,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                                     <YoYMetricGroupHeader
                                         key={`${section.id}-${field.id}`}
                                         label={field.label}
-                                        colSpan={getYoYColSpan(tableConfig.yoyMode)}
+                                        colSpan={getYoYColSpan(tableConfig.yoyMode, tableConfig.lyCompareMode)}
                                         highlighted={tableConfig.mode === 'focus'}
                                         isFirst={sectionIndex === 0 && metricIndex === 0}
                                     />
@@ -1878,6 +2120,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                                     cyLabel: field.label,
                                     lyLabel: field.lyLabel,
                                     yoyMode: tableConfig.yoyMode,
+                                    lyCompareMode: tableConfig.lyCompareMode,
                                     highlighted: tableConfig.mode === 'focus',
                                     compact: true,
                                 }))}
@@ -1891,7 +2134,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
                         const rowBg = rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/70';
                         return (
                             <tr key={date} className={`${rowBg} hover:bg-blue-50/30 transition-colors`}>
-                                <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{date}</td>
+                                <td className={`${stickyMetaClass} left-0 px-4 py-3 whitespace-nowrap text-sm text-gray-900 font-semibold border-b border-gray-100 shadow-[2px_0_4px_rgba(0,0,0,0.04)]`}>{formatDateWithWeekday(date)}</td>
                                 <td className="px-2 py-3 text-center border-b border-gray-100">{dailyWeather ? getWeatherIcon(dailyWeather.weatherCode) : '-'}</td>
                                 <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.maxTemp}°C` : '-'}</td>
                                 <td className="px-2 py-3 text-right text-sm text-gray-600 border-b border-gray-100">{dailyWeather ? `${dailyWeather.precipitation}mm` : '-'}</td>
