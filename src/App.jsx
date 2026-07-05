@@ -1215,20 +1215,20 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     const [view, setView] = useState('nippo');
     const [displayMode, setDisplayMode] = useState('focus');
     const [yoyMode, setYoyMode] = useState('both');
-    const [selectedSections, setSelectedSections] = useState(['total']);
-    const [selectedNippoMetrics, setSelectedNippoMetrics] = useState(['sales', 'customers']);
-    const [selectedHaikiMetrics, setSelectedHaikiMetrics] = useState(['total']);
+    const [selectedSections, setSelectedSections] = useState(() => ['total', ...stores.map(s => s.name)]);
+    const [selectedNippoMetrics, setSelectedNippoMetrics] = useState(() => NIPPO_METRIC_OPTIONS.map(m => m.id));
+    const [selectedHaikiMetrics, setSelectedHaikiMetrics] = useState(() => HAIKI_METRIC_OPTIONS.map(m => m.id));
     const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
     const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
 
     useEffect(() => {
-        setSelectedSections(['total']);
+        setSelectedSections(['total', ...stores.map(s => s.name)]);
         if (view === 'nippo') {
-            setSelectedNippoMetrics(['sales', 'customers']);
+            setSelectedNippoMetrics(NIPPO_METRIC_OPTIONS.map(m => m.id));
         } else {
-            setSelectedHaikiMetrics(['total']);
+            setSelectedHaikiMetrics(HAIKI_METRIC_OPTIONS.map(m => m.id));
         }
-    }, [view]);
+    }, [view, stores]);
 
     const tableConfig = useMemo(() => ({
         mode: displayMode,
