@@ -1037,88 +1037,160 @@ const ChartCard = ({ title, children }) => (
     </div> 
 );
 
-const NippoDashboard = ({ stores, dateRange, onRefresh }) => {
+const buildDateLabelEntries = (startDate, endDate) => {
+    const entries = [];
+    let currentDate = new Date(startDate);
+    if (currentDate > endDate) return entries;
+    while (currentDate <= endDate) {
+        entries.push({
+            key: getLocalDateString(currentDate),
+            label: formatDateWithWeekday(currentDate),
+        });
+        currentDate.setDate(currentDate.getDate() + 1);
+    }
+    return entries;
+};
+
+const DashboardLyCompareControls = ({ lyCompareMode, setLyCompareMode }) => (
+    <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-slate-50 border border-gray-200 rounded-xl">
+        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider shrink-0">前年比較</span>
+        <div className="flex p-1 bg-gray-100 rounded-lg">
+            <button type="button" onClick={() => setLyCompareMode('date')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${lyCompareMode === 'date' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>前年同日</button>
+            <button type="button" onClick={() => setLyCompareMode('weekday')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${lyCompareMode === 'weekday' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>前年曜日</button>
+            <button type="button" onClick={() => setLyCompareMode('both')} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${lyCompareMode === 'both' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500'}`}>同日+曜日</button>
+        </div>
+        <span className="text-xs text-gray-500">実線＝本年 / 長破線＝前年同日 / 短破線＝前年曜日</span>
+    </div>
+);
+
+const useDashboardCombinedReports = (dateRange, onRefresh) => {
+    const lyFetchRange = useMemo(
+        () => getExtendedLyFetchRange(dateRange.startDateLY, dateRange.endDateLY),
+        [dateRange.startDateLY, dateRange.endDateLY]
+    );
     const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
-    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
+    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(lyFetchRange.start, lyFetchRange.end, onRefresh);
+    const combinedReports = useMemo(
+        () => buildTableCombinedReports(reports, reportsLY),
+        [reports, reportsLY]
+    );
+    return {
+        combinedReports,
+        isLoading: isLoadingReports || isLoadingReportsLY,
+    };
+};
 
-    const combinedReports = useMemo(() => {
-        const lyData = reportsLY.map(r => {
-            if (!r.date) return null;
-            const lyDate = r.date.toDate();
-            const cyDate = new Date(lyDate.getFullYear() + 1, lyDate.getMonth(), lyDate.getDate());
-            return {
-                date: Timestamp.fromDate(cyDate),
-                store: r.store,
-                sales_ly: r.sales,
-                customers_ly: r.customers,
-                customer_spend_ly: r.customer_spend,
-            };
-        }).filter(Boolean);
+const getStoreChartColors = (stores) => {
+    const baseColors = ['rgba(54, 162, 235, 1)', 'rgba(255, 99, 132, 1)', 'rgba(75, 192, 192, 1)', 'rgba(153, 102, 255, 1)', 'rgba(255, 159, 64, 1)'];
+    const colors = {};
+    stores.forEach((store, index) => {
+        colors[store.name] = baseColors[index % baseColors.length];
+    });
+    return colors;
+};
 
-        const reportsById = new Map();
-        reports.forEach(r => {
-            reportsById.set(r.id, r);
+const buildStoreMetricChartData = ({
+    stores,
+    labelEntries,
+    combinedReports,
+    cyKey,
+    lyKey,
+    lyCompareMode,
+    colors,
+    getCyValue,
+    getLyDateValue,
+    getLyDowValue,
+}) => {
+    const labels = labelEntries.map(entry => entry.label);
+    const datasets = stores.flatMap(store => {
+        const storeData = new Array(labelEntries.length).fill(null);
+        const storeDataLyDate = new Array(labelEntries.length).fill(null);
+        const storeDataLyDow = new Array(labelEntries.length).fill(null);
+
+        combinedReports.filter(r => r.store === store.name).forEach(r => {
+            if (!r.date) return;
+            const reportDateStr = getLocalDateString(r.date.toDate());
+            const index = labelEntries.findIndex(entry => entry.key === reportDateStr);
+            if (index === -1) return;
+            storeData[index] = getCyValue ? getCyValue(r) : (r[cyKey] ?? 0);
+            const lyDateVal = getLyDateValue ? getLyDateValue(r) : (r[lyKey] ?? null);
+            const lyDowVal = getLyDowValue ? getLyDowValue(r) : (r[`${lyKey}_dow`] ?? null);
+            storeDataLyDate[index] = lyDateVal;
+            storeDataLyDow[index] = lyDowVal;
         });
-        lyData.forEach(r_ly => {
-            const cyDateStr = getLocalDateString(r_ly.date.toDate());
-            const docId = `${cyDateStr}_${r_ly.store}`;
-            const existingReport = reportsById.get(docId) || { id: docId, date: r_ly.date, store: r_ly.store };
-            reportsById.set(docId, { ...existingReport, ...r_ly });
-        });
-        
-        return Array.from(reportsById.values());
-    }, [reports, reportsLY]);
+
+        const color = colors[store.name];
+        const result = [{
+            label: `${store.name} (本年)`,
+            data: storeData,
+            borderColor: color,
+            backgroundColor: color.replace('1)', '0.1)'),
+            fill: true,
+            tension: 0.1,
+        }];
+        if (lyCompareMode === 'date' || lyCompareMode === 'both') {
+            result.push({
+                label: `${store.name} (前年同日)`,
+                data: storeDataLyDate,
+                borderColor: color,
+                borderDash: [6, 4],
+                fill: false,
+                tension: 0.1,
+            });
+        }
+        if (lyCompareMode === 'weekday' || lyCompareMode === 'both') {
+            result.push({
+                label: `${store.name} (前年曜日)`,
+                data: storeDataLyDow,
+                borderColor: color,
+                borderDash: [2, 3],
+                borderWidth: 2,
+                fill: false,
+                tension: 0.1,
+            });
+        }
+        return result;
+    });
+    return { labels, datasets };
+};
+
+const dashboardLineChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { position: 'top' } },
+};
+
+const NippoDashboard = ({ stores, dateRange, onRefresh }) => {
+    const [lyCompareMode, setLyCompareMode] = useState('date');
+    const { combinedReports, isLoading } = useDashboardCombinedReports(dateRange, onRefresh);
 
     const lineChartData = useMemo(() => {
-        const labels = [];
-        let currentDate = new Date(dateRange.startDate);
-        if (currentDate > dateRange.endDate) {
+        const labelEntries = buildDateLabelEntries(dateRange.startDate, dateRange.endDate);
+        if (labelEntries.length === 0) {
             return { sales: { labels: [], datasets: [] }, customers: { labels: [], datasets: [] }, customer_spend: { labels: [], datasets: [] } };
         }
-        while (currentDate <= dateRange.endDate) {
-            labels.push(getLocalDateString(currentDate));
-            currentDate.setDate(currentDate.getDate() + 1);
-        }
+        const colors = getStoreChartColors(stores);
         const metrics = [
-            { key: 'sales', ly_key: 'sales_ly', name: '売上' }, 
-            { key: 'customers', ly_key: 'customers_ly', name: '客数' },
-            { key: 'customer_spend', ly_key: 'customer_spend_ly', name: '客単価' },
+            { key: 'sales', ly_key: 'sales_ly' },
+            { key: 'customers', ly_key: 'customers_ly' },
+            { key: 'customer_spend', ly_key: 'customer_spend_ly' },
         ];
-        const colors = {};
-        const baseColors = ['rgba(54, 162, 235, 1)', 'rgba(255, 99, 132, 1)', 'rgba(75, 192, 192, 1)', 'rgba(153, 102, 255, 1)', 'rgba(255, 159, 64, 1)'];
-        stores.forEach((store, index) => {
-            colors[store.name] = baseColors[index % baseColors.length];
-        });
-
         const chartDataSets = {};
         metrics.forEach(metric => {
-            chartDataSets[metric.key] = {
-                labels,
-                datasets: stores.flatMap(store => {
-                    const storeData = new Array(labels.length).fill(null);
-                    const storeDataLy = new Array(labels.length).fill(null);
-                    
-                    combinedReports.filter(r => r.store === store.name).forEach(r => {
-                        if (!r.date) return;
-                        const reportDateStr = getLocalDateString(r.date.toDate());
-                        const index = labels.indexOf(reportDateStr);
-                        if (index !== -1) { 
-                            storeData[index] = r[metric.key] || 0; 
-                            storeDataLy[index] = r[metric.ly_key] || 0;
-                        }
-                    });
-
-                    return [
-                        { label: `${store.name} (本年)`, data: storeData, borderColor: colors[store.name], backgroundColor: (colors[store.name]).replace('1)', '0.1)'), fill: true, tension: 0.1 },
-                        { label: `${store.name} (前年)`, data: storeDataLy, borderColor: colors[store.name], borderDash: [5, 5], fill: false, tension: 0.1 }
-                    ];
-                })
-            };
+            chartDataSets[metric.key] = buildStoreMetricChartData({
+                stores,
+                labelEntries,
+                combinedReports,
+                cyKey: metric.key,
+                lyKey: metric.ly_key,
+                lyCompareMode,
+                colors,
+            });
         });
         return chartDataSets;
-    }, [combinedReports, stores, dateRange]);
+    }, [combinedReports, stores, dateRange, lyCompareMode]);
     
-    if (isLoadingReports || isLoadingReportsLY) {
+    if (isLoading) {
         return (
             <div className="flex justify-center items-center h-full">
                 <div className="text-center">
@@ -1132,10 +1204,11 @@ const NippoDashboard = ({ stores, dateRange, onRefresh }) => {
     return (
         <div>
             <h1 className="text-3xl font-bold text-gray-800 mb-6">日販分析（前年比較）</h1>
+            <DashboardLyCompareControls lyCompareMode={lyCompareMode} setLyCompareMode={setLyCompareMode} />
             <div className="grid grid-cols-1 gap-8">
-                <ChartCard title="売上（日販）推移"><Line data={lineChartData.sales} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } } }}/></ChartCard>
-                <ChartCard title="客数 推移"><Line data={lineChartData.customers} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } } }}/></ChartCard>
-                <ChartCard title="客単価 推移"><Line data={lineChartData.customer_spend} options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' } } }}/></ChartCard>
+                <ChartCard title="売上（日販）推移"><Line data={lineChartData.sales} options={dashboardLineChartOptions} /></ChartCard>
+                <ChartCard title="客数 推移"><Line data={lineChartData.customers} options={dashboardLineChartOptions} /></ChartCard>
+                <ChartCard title="客単価 推移"><Line data={lineChartData.customer_spend} options={dashboardLineChartOptions} /></ChartCard>
             </div>
         </div>
     );
@@ -1149,14 +1222,21 @@ const HAIKI_WASTE_FIELDS = [
     { key: 'waste_promo_10', lyKey: 'waste_promo_10_ly', label: '販促値下げ10%', color: 'rgba(153, 102, 255, 1)' },
 ];
 
-const sumHaikiWaste = (report, useLy = false) => {
+const sumHaikiWaste = (report, variant = 'cy') => {
     if (!report) return 0;
-    return HAIKI_WASTE_FIELDS.reduce((sum, field) => sum + (report[useLy ? field.lyKey : field.key] || 0), 0);
+    return HAIKI_WASTE_FIELDS.reduce((sum, field) => {
+        let key = field.key;
+        if (variant === 'date') key = field.lyKey;
+        if (variant === 'dow') key = `${field.key}_ly_dow`;
+        return sum + (report[key] || 0);
+    }, 0);
 };
 
+const getHaikiLyVariant = (lyCompareMode) => (lyCompareMode === 'weekday' ? 'dow' : 'date');
+
 const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
-    const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
-    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
+    const [lyCompareMode, setLyCompareMode] = useState('date');
+    const { combinedReports, isLoading } = useDashboardCombinedReports(dateRange, onRefresh);
     const [filterStore, setFilterStore] = useState('');
     
     useEffect(() => {
@@ -1165,43 +1245,18 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         }
     }, [stores, filterStore]);
 
-    const combinedReports = useMemo(() => {
-        const lyData = reportsLY.map(r => {
-            if (!r.date) return null;
-            const lyDate = r.date.toDate();
-            const cyDate = new Date(lyDate.getFullYear() + 1, lyDate.getMonth(), lyDate.getDate());
-            return {
-                date: Timestamp.fromDate(cyDate),
-                store: r.store,
-                waste_product_ly: r.waste_product,
-                waste_owner_8_ly: r.waste_owner_8,
-                waste_owner_10_ly: r.waste_owner_10,
-                waste_promo_8_ly: r.waste_promo_8,
-                waste_promo_10_ly: r.waste_promo_10,
-            };
-        }).filter(Boolean);
-
-        const reportsById = new Map();
-        reports.forEach(r => reportsById.set(r.id, r));
-        lyData.forEach(r_ly => {
-            const cyDateStr = getLocalDateString(r_ly.date.toDate());
-            const docId = `${cyDateStr}_${r_ly.store}`;
-            const existingReport = reportsById.get(docId) || { id: docId, date: r_ly.date, store: r_ly.store };
-            reportsById.set(docId, { ...existingReport, ...r_ly });
-        });
-
-        return Array.from(reportsById.values());
-    }, [reports, reportsLY]);
-
     const { doughnutData, summaryData, totalWasteChartData, itemLineChartData } = useMemo(() => {
         const filteredReports = filterStore ? combinedReports.filter(r => r.store === filterStore) : combinedReports;
+        const lyVariant = getHaikiLyVariant(lyCompareMode);
         
         const results = { total: 0, totalLy: 0, breakdown: [0, 0, 0, 0, 0], breakdownLy: [0, 0, 0, 0, 0] };
         
         filteredReports.forEach(report => {
             HAIKI_WASTE_FIELDS.forEach((field, index) => {
                 const value = report[field.key] || 0;
-                const valueLy = report[field.lyKey] || 0;
+                const valueLy = lyVariant === 'dow'
+                    ? (report[`${field.key}_ly_dow`] || 0)
+                    : (report[field.lyKey] || 0);
                 results.breakdown[index] += value;
                 results.breakdownLy[index] += valueLy;
                 results.total += value;
@@ -1210,60 +1265,67 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         });
         
         const dayCount = (dateRange.endDate > dateRange.startDate) ? Math.max(1, Math.round((dateRange.endDate - dateRange.startDate) / (1000 * 60 * 60 * 24)) + 1) : 1;
-        
-        const labels = [];
-        let currentDate = new Date(dateRange.startDate);
-        if (currentDate <= dateRange.endDate) {
-            while (currentDate <= dateRange.endDate) {
-                labels.push(getLocalDateString(currentDate));
-                currentDate.setDate(currentDate.getDate() + 1);
-            }
-        }
+        const labelEntries = buildDateLabelEntries(dateRange.startDate, dateRange.endDate);
+        const storeColors = getStoreChartColors(stores);
 
-        const storeColors = {};
-        const baseColors = ['rgba(54, 162, 235, 1)', 'rgba(255, 99, 132, 1)', 'rgba(75, 192, 192, 1)', 'rgba(153, 102, 255, 1)', 'rgba(255, 159, 64, 1)'];
-        stores.forEach((store, index) => {
-            storeColors[store.name] = baseColors[index % baseColors.length];
+        const totalWasteChartData = buildStoreMetricChartData({
+            stores,
+            labelEntries,
+            combinedReports,
+            lyCompareMode,
+            colors: storeColors,
+            getCyValue: (r) => sumHaikiWaste(r, 'cy'),
+            getLyDateValue: (r) => sumHaikiWaste(r, 'date') || null,
+            getLyDowValue: (r) => sumHaikiWaste(r, 'dow') || null,
         });
 
-        const totalWasteChartData = {
-            labels,
-            datasets: stores.flatMap(store => {
-                const storeData = new Array(labels.length).fill(null);
-                const storeDataLy = new Array(labels.length).fill(null);
-
-                combinedReports.filter(r => r.store === store.name).forEach(r => {
-                    if (!r.date) return;
-                    const reportDateStr = getLocalDateString(r.date.toDate());
-                    const index = labels.indexOf(reportDateStr);
-                    if (index !== -1) {
-                        storeData[index] = sumHaikiWaste(r, false);
-                        storeDataLy[index] = sumHaikiWaste(r, true);
-                    }
-                });
-
-                return [
-                    { label: `${store.name} (本年)`, data: storeData, borderColor: storeColors[store.name], backgroundColor: storeColors[store.name].replace('1)', '0.1)'), fill: true, tension: 0.1 },
-                    { label: `${store.name} (前年)`, data: storeDataLy, borderColor: storeColors[store.name], borderDash: [5, 5], fill: false, tension: 0.1 },
-                ];
-            }),
-        };
-
         const itemLineChartData = {
-            labels,
+            labels: labelEntries.map(entry => entry.label),
             datasets: HAIKI_WASTE_FIELDS.flatMap(item => {
-                const cyData = labels.map(labelDate => {
-                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === labelDate);
+                const cyData = labelEntries.map(entry => {
+                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key);
                     return reportsForDay.reduce((sum, r) => sum + (r[item.key] || 0), 0);
                 });
-                const lyData = labels.map(labelDate => {
-                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === labelDate);
-                    return reportsForDay.reduce((sum, r) => sum + (r[item.lyKey] || 0), 0);
+                const lyDateData = labelEntries.map(entry => {
+                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key);
+                    const val = reportsForDay.reduce((sum, r) => sum + (r[item.lyKey] || 0), 0);
+                    return val || null;
                 });
-                return [
-                    { label: `${item.label} (本年)`, data: cyData, borderColor: item.color, backgroundColor: item.color.replace('1)', '0.15)'), fill: false, tension: 0.1 },
-                    { label: `${item.label} (前年)`, data: lyData, borderColor: item.color, borderDash: [5, 5], fill: false, tension: 0.1 },
-                ];
+                const lyDowData = labelEntries.map(entry => {
+                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key);
+                    const val = reportsForDay.reduce((sum, r) => sum + (r[`${item.key}_ly_dow`] || 0), 0);
+                    return val || null;
+                });
+                const datasets = [{
+                    label: `${item.label} (本年)`,
+                    data: cyData,
+                    borderColor: item.color,
+                    backgroundColor: item.color.replace('1)', '0.15)'),
+                    fill: false,
+                    tension: 0.1,
+                }];
+                if (lyCompareMode === 'date' || lyCompareMode === 'both') {
+                    datasets.push({
+                        label: `${item.label} (前年同日)`,
+                        data: lyDateData,
+                        borderColor: item.color,
+                        borderDash: [6, 4],
+                        fill: false,
+                        tension: 0.1,
+                    });
+                }
+                if (lyCompareMode === 'weekday' || lyCompareMode === 'both') {
+                    datasets.push({
+                        label: `${item.label} (前年曜日)`,
+                        data: lyDowData,
+                        borderColor: item.color,
+                        borderDash: [2, 3],
+                        borderWidth: 2,
+                        fill: false,
+                        tension: 0.1,
+                    });
+                }
+                return datasets;
             }),
         };
         
@@ -1302,7 +1364,7 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
             totalWasteChartData,
             itemLineChartData,
         };
-    }, [combinedReports, filterStore, dateRange, stores]);
+    }, [combinedReports, filterStore, dateRange, stores, lyCompareMode]);
 
     const doughnutOptions = {
         responsive: true, maintainAspectRatio: false,
@@ -1342,7 +1404,7 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         </div>
     );
 
-    if (isLoadingReports || isLoadingReportsLY) {
+    if (isLoading) {
         return (
             <div className="flex justify-center items-center h-full">
                 <div className="text-center">
@@ -1353,10 +1415,12 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         );
     }
 
+    const lySummaryLabel = lyCompareMode === 'weekday' ? '前年曜日' : lyCompareMode === 'both' ? '前年同日' : '前年';
+
     return (
         <div>
             <h1 className="text-3xl font-bold text-gray-800 mb-2">廃棄・値下げ分析（前年比較）</h1>
-            <p className="text-sm text-gray-500 mb-6">実線＝本年、破線＝前年</p>
+            <DashboardLyCompareControls lyCompareMode={lyCompareMode} setLyCompareMode={setLyCompareMode} />
             <div className="flex flex-wrap justify-center gap-2 mb-6">
                 {stores.map(s => (<button key={s.id} onClick={() => setFilterStore(s.name)} className={`px-3 py-2 text-sm rounded-lg transition-all ${filterStore === s.name ? 'bg-blue-600 text-white shadow' : 'bg-gray-200 hover:bg-gray-300'}`}>{s.name}</button>))}
             </div>
@@ -1374,7 +1438,7 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
                             <div className="text-center pb-4 border-b">
                                 <h3 className="text-lg font-semibold text-gray-500 mb-2">選択期間の累計</h3>
                                 <p className="text-4xl font-bold text-red-600">¥{summaryData.total.toLocaleString()}</p>
-                                <p className="text-sm text-gray-500 mt-2">前年: ¥{summaryData.totalLy.toLocaleString()}</p>
+                                <p className="text-sm text-gray-500 mt-2">{lySummaryLabel}: ¥{summaryData.totalLy.toLocaleString()}</p>
                                 <p className={`text-sm font-semibold mt-1 ${summaryData.yoyDiff > 0 ? 'text-red-600' : summaryData.yoyDiff < 0 ? 'text-green-600' : 'text-gray-600'}`}>
                                     前年差 {summaryData.yoyDiff >= 0 ? '+' : ''}¥{Math.round(summaryData.yoyDiff).toLocaleString()}
                                     {summaryData.yoyRatio != null && `（${summaryData.yoyRatio.toFixed(1)}%）`}
