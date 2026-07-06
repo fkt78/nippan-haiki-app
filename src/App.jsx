@@ -206,14 +206,36 @@ const mergeCalendarYearLyReports = (reports, reportsLY) => {
     return Array.from(reportsById.values());
 };
 
-const enrichReportsWithWeekdayLy = (mergedReports, reportsLY) => {
+const enrichReportsWithWeekdayLy = (mergedReports, reportsLY, dateRange = null) => {
     const lyLookup = new Map();
     reportsLY.forEach(r => {
         if (!r.date || !r.store) return;
         lyLookup.set(`${getLocalDateString(r.date.toDate())}_${r.store}`, r);
     });
 
-    return mergedReports.map(report => {
+    const entriesById = new Map();
+    mergedReports.forEach(r => entriesById.set(r.id, r));
+
+    // 本年・前年同日のデータが無い日付×店舗でも、前年曜日のデータがあれば行を作る
+    if (dateRange?.startDate && dateRange?.endDate) {
+        const storeNames = new Set();
+        reportsLY.forEach(r => { if (r.store) storeNames.add(r.store); });
+        const cursor = parseLocalDate(dateRange.startDate);
+        const endD = parseLocalDate(dateRange.endDate);
+        while (cursor <= endD) {
+            const dateStr = getLocalDateString(cursor);
+            const lyDowStr = getLocalDateString(getSameWeekdayNearLastYearDate(cursor));
+            storeNames.forEach(store => {
+                const id = `${dateStr}_${store}`;
+                if (!entriesById.has(id) && lyLookup.has(`${lyDowStr}_${store}`)) {
+                    entriesById.set(id, { id, date: Timestamp.fromDate(new Date(cursor)), store });
+                }
+            });
+            cursor.setDate(cursor.getDate() + 1);
+        }
+    }
+
+    return Array.from(entriesById.values()).map(report => {
         if (!report.date) return report;
         const cyDate = report.date.toDate();
         const lyDowDate = getSameWeekdayNearLastYearDate(cyDate);
@@ -242,8 +264,8 @@ const enrichReportsWithWeekdayLy = (mergedReports, reportsLY) => {
     });
 };
 
-const buildTableCombinedReports = (reports, reportsLY) =>
-    enrichReportsWithWeekdayLy(mergeCalendarYearLyReports(reports, reportsLY), reportsLY);
+const buildTableCombinedReports = (reports, reportsLY, dateRange = null) =>
+    enrichReportsWithWeekdayLy(mergeCalendarYearLyReports(reports, reportsLY), reportsLY, dateRange);
 
 const buildWeatherByDate = (reports) => {
     const map = new Map();
@@ -1090,8 +1112,8 @@ const useDashboardCombinedReports = (dateRange, onRefresh) => {
     const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
     const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(lyFetchRange.start, lyFetchRange.end, onRefresh);
     const combinedReports = useMemo(
-        () => buildTableCombinedReports(reports, reportsLY),
-        [reports, reportsLY]
+        () => buildTableCombinedReports(reports, reportsLY, dateRange),
+        [reports, reportsLY, dateRange]
     );
     return {
         combinedReports,
@@ -1554,8 +1576,8 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
     }, [view, stores]);
 
     const combinedReports = useMemo(
-        () => buildTableCombinedReports(reports, reportsLY),
-        [reports, reportsLY]
+        () => buildTableCombinedReports(reports, reportsLY, dateRange),
+        [reports, reportsLY, dateRange]
     );
     const weatherByDateLy = useMemo(() => buildWeatherByDate(reportsLY), [reportsLY]);
 
@@ -3315,8 +3337,10 @@ function AppContent() {
       return filtered.length > 0 ? filtered : allStores;
   }, [allStores]);
 
+  // 時刻を0:00に正規化しないと、初日の0:00保存データが date >= クエリから漏れる
   const today = new Date();
-  const oneMonthAgo = new Date(new Date().setMonth(today.getMonth() - 1));
+  today.setHours(0, 0, 0, 0);
+  const oneMonthAgo = new Date(new Date(today).setMonth(today.getMonth() - 1));
   const [startDate, setStartDate] = useState(oneMonthAgo);
   const [endDate, setEndDate] = useState(today);
   
@@ -3332,7 +3356,7 @@ function AppContent() {
   const renderPage = () => {
     const pageProps = { stores, employees, dateRange: {startDate, endDate, startDateLY, endDateLY}, onRefresh: refreshTrigger };
     switch (currentPage) {
-      case 'home': return <HomeDashboard dateRange={{startDate: new Date(new Date().setDate(today.getDate() - 1)), endDate: today}} onRefresh={refreshTrigger} />;
+      case 'home': return <HomeDashboard dateRange={{startDate: new Date(new Date(today).setDate(today.getDate() - 1)), endDate: today}} onRefresh={refreshTrigger} />;
       case 'nippo': return <NippoDashboard {...pageProps} />;
       case 'haiki': return <HaikiDashboard {...pageProps} />;
       case 'table': return <DataTablePage {...pageProps} />;
