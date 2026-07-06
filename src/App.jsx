@@ -154,6 +154,25 @@ const getExtendedLyFetchRange = (startDateLY, endDateLY) => {
     return { start, end };
 };
 
+/** 前年ドキュメントから数値を取得（日販入力の sales / 一括入力の sales_ly の両方に対応） */
+const getLySourceValue = (report, key) => {
+    if (!report) return undefined;
+    const direct = report[key];
+    if (direct != null && direct !== '') return direct;
+    const lyField = report[`${key}_ly`];
+    if (lyField != null && lyField !== '') return lyField;
+    return undefined;
+};
+
+const getLyCustomerSpend = (report) => {
+    const spend = getLySourceValue(report, 'customer_spend');
+    if (spend != null) return spend;
+    const sales = getLySourceValue(report, 'sales');
+    const customers = getLySourceValue(report, 'customers');
+    if (customers > 0 && sales != null) return sales / customers;
+    return undefined;
+};
+
 const mergeCalendarYearLyReports = (reports, reportsLY) => {
     const lyData = reportsLY.map(r => {
         if (!r.date) return null;
@@ -162,14 +181,14 @@ const mergeCalendarYearLyReports = (reports, reportsLY) => {
         return {
             date: Timestamp.fromDate(cyDate),
             store: r.store,
-            sales_ly: r.sales,
-            customers_ly: r.customers,
-            customer_spend_ly: r.customer_spend,
-            waste_product_ly: r.waste_product,
-            waste_owner_8_ly: r.waste_owner_8,
-            waste_owner_10_ly: r.waste_owner_10,
-            waste_promo_8_ly: r.waste_promo_8,
-            waste_promo_10_ly: r.waste_promo_10,
+            sales_ly: getLySourceValue(r, 'sales'),
+            customers_ly: getLySourceValue(r, 'customers'),
+            customer_spend_ly: getLyCustomerSpend(r),
+            waste_product_ly: getLySourceValue(r, 'waste_product'),
+            waste_owner_8_ly: getLySourceValue(r, 'waste_owner_8'),
+            waste_owner_10_ly: getLySourceValue(r, 'waste_owner_10'),
+            waste_promo_8_ly: getLySourceValue(r, 'waste_promo_8'),
+            waste_promo_10_ly: getLySourceValue(r, 'waste_promo_10'),
         };
     }).filter(Boolean);
 
@@ -210,14 +229,14 @@ const enrichReportsWithWeekdayLy = (mergedReports, reportsLY) => {
         if (lyCalReport?.weather) dowPatch.weather_ly = lyCalReport.weather;
         if (lyDowReport?.weather) dowPatch.weather_ly_dow = lyDowReport.weather;
         if (lyDowReport) {
-            dowPatch.sales_ly_dow = lyDowReport.sales;
-            dowPatch.customers_ly_dow = lyDowReport.customers;
-            dowPatch.customer_spend_ly_dow = lyDowReport.customer_spend ?? (lyDowReport.customers > 0 ? lyDowReport.sales / lyDowReport.customers : undefined);
-            dowPatch.waste_product_ly_dow = lyDowReport.waste_product;
-            dowPatch.waste_owner_8_ly_dow = lyDowReport.waste_owner_8;
-            dowPatch.waste_owner_10_ly_dow = lyDowReport.waste_owner_10;
-            dowPatch.waste_promo_8_ly_dow = lyDowReport.waste_promo_8;
-            dowPatch.waste_promo_10_ly_dow = lyDowReport.waste_promo_10;
+            dowPatch.sales_ly_dow = getLySourceValue(lyDowReport, 'sales');
+            dowPatch.customers_ly_dow = getLySourceValue(lyDowReport, 'customers');
+            dowPatch.customer_spend_ly_dow = getLyCustomerSpend(lyDowReport);
+            dowPatch.waste_product_ly_dow = getLySourceValue(lyDowReport, 'waste_product');
+            dowPatch.waste_owner_8_ly_dow = getLySourceValue(lyDowReport, 'waste_owner_8');
+            dowPatch.waste_owner_10_ly_dow = getLySourceValue(lyDowReport, 'waste_owner_10');
+            dowPatch.waste_promo_8_ly_dow = getLySourceValue(lyDowReport, 'waste_promo_8');
+            dowPatch.waste_promo_10_ly_dow = getLySourceValue(lyDowReport, 'waste_promo_10');
         }
         return { ...report, ...dowPatch };
     });
@@ -1656,7 +1675,7 @@ const DataTablePage = ({ stores, dateRange, onRefresh }) => {
             </div>
 
             {view === 'nippo'
-                ? <NippoTable reports={combinedReports} stores={stores} tableConfig={tableConfig} />
+                ? <NippoTable reports={combinedReports} stores={stores} dateRange={dateRange} tableConfig={tableConfig} />
                 : <HaikiTable reports={combinedReports} stores={stores} dateRange={dateRange} tableConfig={tableConfig} />}
         </div>
     );
@@ -1805,38 +1824,58 @@ const renderYoYHeadersForMetric = ({ cyLabel, lyLabel, yoyMode, lyCompareMode = 
     return headers;
 };
 
-const NippoTable = ({ reports, stores, tableConfig }) => {
+const hasCyNippoInput = (report) =>
+    report && (report.updatedAt_sales != null || report.sales != null || report.customers != null);
+
+const NippoTable = ({ reports, stores, dateRange, tableConfig }) => {
     const { tableData, grandTotal, grandAverage } = useMemo(() => {
         const dataByDate = new Map();
-        
+        let dayCount = 0;
+
+        let currentDate = new Date(dateRange.startDate);
+        if (currentDate <= dateRange.endDate) {
+            while (currentDate <= dateRange.endDate) {
+                dataByDate.set(getLocalDateString(currentDate), { storeData: {} });
+                currentDate.setDate(currentDate.getDate() + 1);
+                dayCount++;
+            }
+        }
+        dayCount = dayCount || 1;
+
         reports.forEach(report => {
             if (!report.date) return;
             const dateStr = getLocalDateString(report.date.toDate());
-            if (!dataByDate.has(dateStr)) dataByDate.set(dateStr, { storeData: {}, total: {} });
-            
+            if (!dataByDate.has(dateStr)) return;
             const existingData = dataByDate.get(dateStr).storeData[report.store] || {};
             dataByDate.get(dateStr).storeData[report.store] = { ...existingData, ...report };
         });
 
         const sortedData = Array.from(dataByDate.entries()).map(([date, data]) => {
             const total = {
-                sales: 0, customers: 0, sales_ly: 0, customers_ly: 0,
+                sales: null, customers: null, customer_spend: null,
+                sales_ly: 0, customers_ly: 0,
                 sales_ly_dow: 0, customers_ly_dow: 0,
                 lyDateCompareDate: getLocalDateString(getSameCalendarDateLastYear(new Date(`${date}T00:00:00`))),
                 lyDowCompareDate: getLocalDateString(getSameWeekdayNearLastYearDate(new Date(`${date}T00:00:00`))),
             };
+            let hasCyNippo = false;
             stores.forEach(store => {
                 const report = data.storeData[store.name];
                 if (report) {
-                    total.sales += report.sales || 0;
-                    total.customers += report.customers || 0;
+                    if (hasCyNippoInput(report)) {
+                        hasCyNippo = true;
+                        total.sales = (total.sales ?? 0) + (report.sales || 0);
+                        total.customers = (total.customers ?? 0) + (report.customers || 0);
+                    }
                     total.sales_ly += report.sales_ly || 0;
                     total.customers_ly += report.customers_ly || 0;
                     total.sales_ly_dow += report.sales_ly_dow || 0;
                     total.customers_ly_dow += report.customers_ly_dow || 0;
                 }
             });
-            total.customer_spend = total.customers > 0 ? total.sales / total.customers : 0;
+            if (hasCyNippo) {
+                total.customer_spend = total.customers > 0 ? total.sales / total.customers : 0;
+            }
             total.customer_spend_ly = total.customers_ly > 0 ? total.sales_ly / total.customers_ly : 0;
             total.customer_spend_ly_dow = total.customers_ly_dow > 0 ? total.sales_ly_dow / total.customers_ly_dow : 0;
             data.total = total;
@@ -1851,9 +1890,13 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
             grandTotal.storeTotals[store.name] = { sales: 0, customers: 0, sales_ly: 0, customers_ly: 0, sales_ly_dow: 0, customers_ly_dow: 0 };
         });
 
+        let cyInputDayCount = 0;
         sortedData.forEach(row => {
-            grandTotal.total.sales += row.total.sales;
-            grandTotal.total.customers += row.total.customers;
+            if (row.total.sales != null) {
+                cyInputDayCount++;
+                grandTotal.total.sales += row.total.sales;
+                grandTotal.total.customers += row.total.customers;
+            }
             grandTotal.total.sales_ly += row.total.sales_ly;
             grandTotal.total.customers_ly += row.total.customers_ly;
             grandTotal.total.sales_ly_dow += row.total.sales_ly_dow;
@@ -1862,8 +1905,10 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
             stores.forEach(store => {
                 const report = row.storeData[store.name];
                 if (report) {
-                    grandTotal.storeTotals[store.name].sales += report.sales || 0;
-                    grandTotal.storeTotals[store.name].customers += report.customers || 0;
+                    if (hasCyNippoInput(report)) {
+                        grandTotal.storeTotals[store.name].sales += report.sales || 0;
+                        grandTotal.storeTotals[store.name].customers += report.customers || 0;
+                    }
                     grandTotal.storeTotals[store.name].sales_ly += report.sales_ly || 0;
                     grandTotal.storeTotals[store.name].customers_ly += report.customers_ly || 0;
                     grandTotal.storeTotals[store.name].sales_ly_dow += report.sales_ly_dow || 0;
@@ -1871,13 +1916,12 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
                 }
             });
         });
-        
-        const dayCount = sortedData.length > 0 ? sortedData.length : 1;
-        
+        cyInputDayCount = cyInputDayCount || 1;
+
         const grandAverage = {
             total: {
-                sales: grandTotal.total.sales / dayCount,
-                customers: grandTotal.total.customers / dayCount,
+                sales: grandTotal.total.sales / cyInputDayCount,
+                customers: grandTotal.total.customers / cyInputDayCount,
                 sales_ly: grandTotal.total.sales_ly / dayCount,
                 customers_ly: grandTotal.total.customers_ly / dayCount,
                 sales_ly_dow: grandTotal.total.sales_ly_dow / dayCount,
@@ -1899,9 +1943,10 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
              grandTotal.storeTotals[store.name].customer_spend_ly_dow = grandTotal.storeTotals[store.name].customers_ly_dow > 0 ? grandTotal.storeTotals[store.name].sales_ly_dow / grandTotal.storeTotals[store.name].customers_ly_dow : 0;
             
              const storeTotal = grandTotal.storeTotals[store.name];
+             const storeCyDays = sortedData.filter(row => hasCyNippoInput(row.storeData[store.name])).length || 1;
              grandAverage.storeTotals[store.name] = {
-                 sales: storeTotal.sales / dayCount,
-                 customers: storeTotal.customers / dayCount,
+                 sales: storeTotal.sales / storeCyDays,
+                 customers: storeTotal.customers / storeCyDays,
                  sales_ly: storeTotal.sales_ly / dayCount,
                  customers_ly: storeTotal.customers_ly / dayCount,
                  sales_ly_dow: storeTotal.sales_ly_dow / dayCount,
@@ -1914,7 +1959,7 @@ const NippoTable = ({ reports, stores, tableConfig }) => {
         });
 
         return { tableData: sortedData, grandTotal, grandAverage };
-    }, [reports, stores]);
+    }, [reports, stores, dateRange]);
 
     const nippoMetrics = [
         { id: 'sales', cyKey: 'sales', lyKey: 'sales_ly', cyLabel: '売上', lyLabel: '前年売上', prefix: '¥' },
@@ -2366,9 +2411,9 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
             return {
                 date: Timestamp.fromDate(cyDate),
                 store: r.store,
-                sales_ly: r.sales,
-                customers_ly: r.customers,
-                customer_spend_ly: r.customer_spend,
+                sales_ly: getLySourceValue(r, 'sales'),
+                customers_ly: getLySourceValue(r, 'customers'),
+                customer_spend_ly: getLyCustomerSpend(r),
             };
         }).filter(Boolean);
 
