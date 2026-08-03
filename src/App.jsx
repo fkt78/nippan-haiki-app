@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { APP_VERSION, BUILD_TIME, formatBuildTime } from './version.js';
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, doc, getDoc, getDocs, setDoc, writeBatch, onSnapshot, query, where, Timestamp, limit } from 'firebase/firestore';
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, writeBatch, onSnapshot, query, where, Timestamp, limit, documentId, deleteField } from 'firebase/firestore';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement, PointElement, LineElement } from 'chart.js';
 import { Line, Doughnut } from 'react-chartjs-2';
 
@@ -28,6 +28,20 @@ const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
 
+// 作業割当アプリ（CONV-SAGYOU-APP）のFirebase設定 ※読み取り専用
+const sagyouFirebaseConfig = {
+    apiKey: "AIzaSyAvxKaj49CfK9T5-h4AycKcguU2gsSXTxc",
+    authDomain: "new-check-137f9.firebaseapp.com",
+    projectId: "new-check-137f9",
+    storageBucket: "new-check-137f9.firebasestorage.app",
+    messagingSenderId: "534868750946",
+    appId: "1:534868750946:web:8e4341569853712bd8573b",
+};
+
+// 第2引数で名前を付けることで既存インスタンスと共存させる
+const sagyouApp = initializeApp(sagyouFirebaseConfig, 'sagyou');
+const sagyouDb = getFirestore(sagyouApp);
+
 // Firestore Paths
 // 【修正完了】写真から判明した正しいパス構造に修正しました。
 // マスターデータ（店舗・従業員）は共有の場所から、日報データはアプリ固有の場所から取得します。
@@ -40,6 +54,10 @@ const employeesPath = `${masterBasePath}/employees`;
 // アプリ固有データ（日報）のベースパス
 const appBasePath = "artifacts/hattyuu-kanri-app-test/public/data";
 const dailyReportsPath = `${appBasePath}/daily_reports`;
+
+// 作業割当プロジェクト（new-check-137f9）側のパス ※読み取り専用
+const SAGYOU_HOURLY_PATH = 'hourly_metrics';
+const SAGYOU_STORES_PATH = 'artifacts/general-master-data/public/data/stores';
 
 // PapaParse Loader
 const usePapaParse = () => {
@@ -87,6 +105,7 @@ const RefreshCwIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" h
 const BrainIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 2.25A2.25 2.25 0 0 1 11.75 0h.5A2.25 2.25 0 0 1 14.5 2.25v1.5a.25.25 0 0 1-.25.25h-4.5a.25.25 0 0 1-.25-.25v-1.5Zm-3 3A2.25 2.25 0 0 0 4.25 3h-.5A2.25 2.25 0 0 0 1.5 5.25v1.5a.25.25 0 0 0 .25.25h4.5a.25.25 0 0 0 .25-.25v-1.5Zm9 0A2.25 2.25 0 0 1 17.75 3h.5A2.25 2.25 0 0 1 22.5 5.25v1.5a.25.25 0 0 1-.25.25h-4.5a.25.25 0 0 1-.25-.25v-1.5ZM12 12a2.25 2.25 0 0 0-2.25-2.25h-1.5a.25.25 0 0 0-.25.25v4.5a.25.25 0 0 0 .25.25h1.5A2.25 2.25 0 0 0 12 12Zm0 0a2.25 2.25 0 0 1 2.25-2.25h1.5a.25.25 0 0 1 .25.25v4.5a.25.25 0 0 1-.25.25h-1.5A2.25 2.25 0 0 1 12 12Z"/><path d="M4.25 18.25a.25.25 0 0 0-.25.25v1.5A2.25 2.25 0 0 0 6.25 24h.5A2.25 2.25 0 0 0 9 21.75v-1.5a.25.25 0 0 0-.25-.25h-4.5Zm9 0a.25.25 0 0 1 .25.25v1.5A2.25 2.25 0 0 1 15.25 24h-.5A2.25 2.25 0 0 1 12.5 21.75v-1.5a.25.25 0 0 1 .25-.25h.5Z"/></svg>;
 const MicIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>;
 const DatabaseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>;
+const ClockIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>;
 
 // ==============================================================================
 // Helper Functions & Hooks
@@ -381,6 +400,128 @@ const getTimestampFromDateString = (dateString) => {
     return Timestamp.fromDate(localDate);
 };
 
+// ==============================================================================
+// 時間帯データ取込（作業割当プロジェクトからの読み取り専用アクセス）
+// ==============================================================================
+
+// 作業割当側の店舗ID → 店舗名 のマップを作る
+const fetchSagyouStoreMap = async () => {
+    const snap = await getDocs(collection(sagyouDb, SAGYOU_STORES_PATH));
+    const map = {};
+    snap.forEach(d => {
+        const name = d.data().name;
+        if (name) map[d.id] = name;
+    });
+    return map;   // { "b2og29...": "伊賀忍者市駅南店", ... }
+};
+
+// 指定店舗・指定期間の時間帯データを取得
+const fetchSagyouHourly = async (sagyouStoreId, fromDate, toDate) => {
+    const q = query(
+        collection(sagyouDb, SAGYOU_HOURLY_PATH),
+        where(documentId(), '>=', `${sagyouStoreId}_${fromDate}`),
+        where(documentId(), '<=', `${sagyouStoreId}_${toDate}`)
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map(d => ({ id: d.id, hourlyData: d.data().hourlyData || {} }));
+};
+
+const summarizeHourly = (hourlyData) => {
+    let hoursFilled = 0, custSum = 0, salesSum = 0;
+    for (let h = 0; h < 24; h++) {
+        const e = hourlyData[String(h)];
+        if (!e) continue;                          // 欠測時間はスキップ
+        hoursFilled++;
+        if (typeof e.customers === 'number') custSum  += e.customers;
+        if (typeof e.sales     === 'number') salesSum += e.sales;
+    }
+    return { hoursFilled, custSum, salesSum };
+};
+
+// プレビュー行の判定（警告は表示のみ。取り込み自体は実行する）
+const judgeHourlyRow = ({ hoursFilled, custSum, salesSum, sales, customers }) => {
+    const labels = [];
+    let level = 'ok';
+    const salesDiff = (typeof sales === 'number') ? sales - salesSum : null;
+
+    // 取り違えは両方向に起こるため、どちらか一方でも成立したら疑いとする
+    //   ケースA: 時間帯側の売上欄に客数を入れた → 時間帯売上 ≒ 日販客数
+    //   ケースB: 日販側の売上欄に客数を入れた   → 日販売上   ≒ 時間帯客数
+    const swapSuspect = salesDiff !== null && Math.abs(salesDiff) > 50000 && (
+        (typeof customers === 'number' && Math.abs(salesSum / 1000 - customers) < 2) ||
+        Math.abs(sales / 1000 - custSum) < 2
+    );
+    if (swapSuspect) {
+        labels.push('🔴 取り違え疑い');
+        level = 'danger';
+    }
+    if (hoursFilled !== 24) {
+        labels.push('⚠️ 不完全');
+        if (level === 'ok') level = 'warn';
+    }
+    if (salesDiff !== null && Math.abs(salesDiff) > 3000) {
+        labels.push('⚠️ 売上差大');
+        if (level === 'ok') level = 'warn';
+    }
+    if (typeof customers === 'number' && customers !== custSum) {
+        labels.push('⚠️ 客数不一致');
+        if (level === 'ok') level = 'warn';
+    }
+    if (labels.length === 0) labels.push('✅ 正常');
+    return { level, labels };
+};
+
+// 日販入力画面向けの突合メッセージ（judgeHourlyRow の結果を表示用に変換）
+const getNippoHourlyMessages = (judgeResult, hourlySummary, salesInYen, customersCount) => {
+    const messages = [];
+    if (judgeResult.level === 'danger') {
+        messages.push({ type: 'danger', text: '🔴 売上と客数が入れ替わっている可能性があります' });
+    }
+    if (typeof salesInYen === 'number' && !isNaN(salesInYen)) {
+        const salesDiff = salesInYen - hourlySummary.salesSum;
+        if (Math.abs(salesDiff) > 3000) {
+            messages.push({ type: 'warn', text: `⚠️ 時間帯データとの差が大きいです（差：${salesDiff.toLocaleString()}円）` });
+        }
+    }
+    if (typeof customersCount === 'number' && !isNaN(customersCount) && customersCount !== hourlySummary.custSum) {
+        messages.push({ type: 'warn', text: `⚠️ 客数が一致しません（時間帯データ：${hourlySummary.custSum.toLocaleString()}人）` });
+    }
+    if (messages.length === 0 && (typeof salesInYen === 'number' || typeof customersCount === 'number')) {
+        messages.push({ type: 'ok', text: '✅ 時間帯データと整合しています' });
+    }
+    return messages;
+};
+
+// 取り込んだ時間帯データを削除（hourly_* 6フィールドのみ。既存フィールドは触らない）
+const rollbackHourly = async (targetDocIds, onProgress) => {
+    const BATCH_SIZE = 400;
+    const deletePayload = {
+        hourlyData:           deleteField(),
+        hourly_hoursFilled:   deleteField(),
+        hourly_customers_sum: deleteField(),
+        hourly_sales_sum:     deleteField(),
+        hourly_syncedAt:      deleteField(),
+        hourly_sourceId:      deleteField(),
+    };
+    let success = 0, failed = 0;
+    for (let i = 0; i < targetDocIds.length; i += BATCH_SIZE) {
+        const chunk = targetDocIds.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
+        chunk.forEach(id => {
+            batch.update(doc(db, dailyReportsPath, id), deletePayload);
+        });
+        try {
+            await batch.commit();
+            success += chunk.length;
+        } catch (error) {
+            console.error('時間帯データの削除エラー: ', error);
+            failed += chunk.length;
+        }
+        onProgress?.({ done: Math.min(i + BATCH_SIZE, targetDocIds.length), total: targetDocIds.length });
+    }
+    return { success, failed };
+};
+
 const getWeatherIcon = (weatherCode) => {
     const icons = {
         0: '☀️', 1: '🌤️', 2: '⛅️', 3: '☁️', 45: '🌫️', 48: '🌫️',
@@ -562,6 +703,7 @@ const NippoInputPage = ({ stores, employees }) => {
     const [formData, setFormData] = useState({ sales: '', customers: ''});
     const [weatherData, setWeatherData] = useState(null);
     const [isWeatherLoading, setIsWeatherLoading] = useState(false);
+    const [hourlySummary, setHourlySummary] = useState(null);   // { hoursFilled, custSum, salesSum } | null
     const [isLoading, setIsLoading] = useState(false);
     const [message, setMessage] = useState('');
 
@@ -571,6 +713,7 @@ const NippoInputPage = ({ stores, employees }) => {
             
             setIsWeatherLoading(true);
             setWeatherData(null);
+            setHourlySummary(null);
             
             let existingWeather = null;
             const weatherQuery = query(
@@ -607,6 +750,23 @@ const NippoInputPage = ({ stores, employees }) => {
                 }
             }
             setIsWeatherLoading(false);
+
+            // 作業割当から当日の時間帯データを取得（天気取得と同タイミング）
+            if (storeName) {
+                try {
+                    const sagyouMap = await fetchSagyouStoreMap();
+                    const sagyouStoreId = Object.entries(sagyouMap).find(([, name]) => name === storeName)?.[0];
+                    if (sagyouStoreId) {
+                        const docs = await fetchSagyouHourly(sagyouStoreId, date, date);
+                        const hourlyData = docs[0]?.hourlyData;
+                        if (hourlyData && Object.keys(hourlyData).length > 0) {
+                            setHourlySummary(summarizeHourly(hourlyData));
+                        }
+                    }
+                } catch (error) {
+                    console.error("時間帯データの取得に失敗しました:", error);
+                }
+            }
             
             if (storeName) {
                 const docId = `${date}_${storeName}`;
@@ -628,6 +788,23 @@ const NippoInputPage = ({ stores, employees }) => {
         
         processDateChange();
     }, [date, storeName]);
+
+    const hourlyComparison = useMemo(() => {
+        if (!hourlySummary) return null;
+        const salesInYen = formData.sales !== '' ? Number(formData.sales) * 1000 : null;
+        const customersCount = formData.customers !== '' ? Number(formData.customers) : null;
+        if (salesInYen === null && customersCount === null) return null;
+        const sales = (typeof salesInYen === 'number' && !isNaN(salesInYen)) ? salesInYen : null;
+        const customers = (typeof customersCount === 'number' && !isNaN(customersCount)) ? customersCount : null;
+        const judgeResult = judgeHourlyRow({
+            hoursFilled: hourlySummary.hoursFilled,
+            custSum: hourlySummary.custSum,
+            salesSum: hourlySummary.salesSum,
+            sales,
+            customers,
+        });
+        return getNippoHourlyMessages(judgeResult, hourlySummary, sales, customers);
+    }, [hourlySummary, formData.sales, formData.customers]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -670,6 +847,28 @@ const NippoInputPage = ({ stores, employees }) => {
         <h1 className="text-3xl font-bold text-gray-800 mb-6">日販入力</h1>
         <form onSubmit={handleSubmit} className="bg-white p-8 rounded-lg shadow max-w-4xl mx-auto space-y-6">
             <BasicInfoSelectors date={date} setDate={setDate} storeName={storeName} setStoreName={setStoreName} stores={stores} inputBy={inputBy} setInputBy={setInputBy} employees={employees} weatherData={weatherData} isWeatherLoading={isWeatherLoading} />
+            {hourlySummary && (
+                <div className="p-4 border rounded-lg bg-blue-50 space-y-3">
+                    <h3 className="text-sm font-semibold text-gray-700">作業割当アプリの時間帯データ</h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                        <div>客数合計：<span className="font-semibold">{hourlySummary.custSum.toLocaleString()}人</span></div>
+                        <div>売上合計：<span className="font-semibold">{hourlySummary.salesSum.toLocaleString()}円</span></div>
+                        <div>
+                            入力済み時間：
+                            <span className={`font-semibold ${hourlySummary.hoursFilled !== 24 ? 'text-yellow-600' : ''}`}>
+                                {hourlySummary.hoursFilled} / 24
+                            </span>
+                        </div>
+                    </div>
+                    {hourlyComparison && hourlyComparison.map((msg, i) => (
+                        <p key={i} className={`text-sm font-medium p-2 rounded ${
+                            msg.type === 'danger' ? 'bg-red-100 text-red-700'
+                            : msg.type === 'warn' ? 'bg-yellow-100 text-yellow-800'
+                            : 'bg-green-100 text-green-700'
+                        }`}>{msg.text}</p>
+                    ))}
+                </div>
+            )}
             <div className="border-t pt-6">
                 <h3 className="text-lg font-semibold text-gray-700 mb-4">本日のデータ</h3>
                 <InputField label="日販 (千円)" name="sales" value={formData.sales} onChange={(e) => setFormData({...formData, sales: e.target.value})} type="text" inputMode="decimal" placeholder="例: 567 (567,000円の場合)" />
@@ -3150,6 +3349,335 @@ const CsvPage = ({ dateRange }) => {
     );
 };
 
+const HourlySyncPage = ({ stores }) => {
+    const yesterdayStr = useMemo(() => {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return getLocalDateString(d);
+    }, []);
+
+    const [fromDate, setFromDate] = useState(yesterdayStr);
+    const [toDate, setToDate] = useState(yesterdayStr);
+    const [storeFilter, setStoreFilter] = useState('all');
+    const [isPreviewing, setIsPreviewing] = useState(false);
+    const [isExecuting, setIsExecuting] = useState(false);
+    const [preview, setPreview] = useState(null);   // { rows, skipped }
+    const [progress, setProgress] = useState(null); // { done, total }
+    const [result, setResult] = useState(null);     // { success, skipped, errors }
+    const [message, setMessage] = useState(null);
+
+    // ロールバック（削除）用 state
+    const [rollbackTargets, setRollbackTargets] = useState(null);
+    const [rollbackLoading, setRollbackLoading] = useState(false);
+    const [rollbackExecuting, setRollbackExecuting] = useState(false);
+    const [rollbackProgress, setRollbackProgress] = useState(null);
+    const [rollbackResult, setRollbackResult] = useState(null);
+
+    // 条件が変わったらプレビューを無効化（プレビュー確認後にのみ実行できるようにする）
+    const resetPreview = () => { setPreview(null); setResult(null); setProgress(null); setMessage(null); };
+
+    const handlePreview = async () => {
+        if (!fromDate || !toDate || fromDate > toDate) {
+            setMessage({ text: '期間の指定が不正です。開始日 ≦ 終了日 で指定してください。', type: 'error' });
+            return;
+        }
+        setIsPreviewing(true);
+        setPreview(null);
+        setResult(null);
+        setProgress(null);
+        setMessage(null);
+        try {
+            // 作業割当側の店舗マスタを取得し、日販側マスタに存在する店舗名のみ対象にする
+            // （「総務」「本部」「フリー」等の非店舗を除外）
+            const sagyouMap = await fetchSagyouStoreMap();
+            const nippanNames = new Set(stores.map(s => s.name));
+            const targets = Object.entries(sagyouMap)
+                .filter(([, name]) => nippanNames.has(name))
+                .filter(([, name]) => storeFilter === 'all' || name === storeFilter);
+
+            if (targets.length === 0) {
+                setMessage({ text: '対象店舗が見つかりません。店舗マスタを確認してください。', type: 'error' });
+                return;
+            }
+
+            let rows = [];
+            let skipped = 0;
+            for (const [sagyouId, storeName] of targets) {
+                const docs = await fetchSagyouHourly(sagyouId, fromDate, toDate);
+                for (const d of docs) {
+                    const date = d.id.slice(sagyouId.length + 1);
+                    if (!d.hourlyData || Object.keys(d.hourlyData).length === 0) {
+                        skipped++;   // hourlyData が空のドキュメントはスキップ
+                        continue;
+                    }
+                    const { hoursFilled, custSum, salesSum } = summarizeHourly(d.hourlyData);
+                    rows.push({
+                        sourceId: d.id,
+                        targetDocId: `${date}_${storeName}`,
+                        date,
+                        storeName,
+                        hourlyData: d.hourlyData,
+                        hoursFilled,
+                        custSum,
+                        salesSum,
+                    });
+                }
+            }
+
+            // 取り込み先の既存ドキュメントを読み、突合用の売上・客数と存在有無を取得（書き込みはしない）
+            const existingById = {};
+            const CHUNK = 50;
+            for (let i = 0; i < rows.length; i += CHUNK) {
+                const chunk = rows.slice(i, i + CHUNK);
+                const snaps = await Promise.all(chunk.map(r => getDoc(doc(db, dailyReportsPath, r.targetDocId))));
+                snaps.forEach((s, idx) => {
+                    existingById[chunk[idx].targetDocId] = s.exists() ? s.data() : null;
+                });
+            }
+
+            rows = rows.map(r => {
+                const ex = existingById[r.targetDocId];
+                const sales = typeof ex?.sales === 'number' ? ex.sales : null;
+                const customers = typeof ex?.customers === 'number' ? ex.customers : null;
+                const { level, labels } = judgeHourlyRow({
+                    hoursFilled: r.hoursFilled, custSum: r.custSum, salesSum: r.salesSum, sales, customers,
+                });
+                return { ...r, exists: !!ex, sales, customers, level, labels };
+            });
+            rows.sort((a, b) => (a.date === b.date ? a.storeName.localeCompare(b.storeName, 'ja') : a.date.localeCompare(b.date)));
+
+            setPreview({ rows, skipped });
+            if (rows.length === 0 && skipped === 0) {
+                setMessage({ text: '指定期間に取り込み対象のデータがありません。', type: 'info' });
+            }
+        } catch (error) {
+            console.error('時間帯データのプレビュー取得エラー: ', error);
+            setMessage({ text: `プレビューの取得中にエラーが発生しました: ${error.message}`, type: 'error' });
+        } finally {
+            setIsPreviewing(false);
+        }
+    };
+
+    const handleExecute = async () => {
+        if (!preview || preview.rows.length === 0) return;
+        const rows = preview.rows;
+        setIsExecuting(true);
+        setResult(null);
+        setMessage(null);
+        setProgress({ done: 0, total: rows.length });
+
+        let success = 0, errors = 0;
+        const BATCH_SIZE = 400;   // writeBatch の上限500件に対する安全マージン
+        try {
+            for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+                const chunk = rows.slice(i, i + BATCH_SIZE);
+                const batch = writeBatch(db);
+                chunk.forEach(r => {
+                    const payload = {
+                        hourlyData: r.hourlyData,
+                        hourly_hoursFilled: r.hoursFilled,
+                        hourly_customers_sum: r.custSum,
+                        hourly_sales_sum: r.salesSum,
+                        hourly_syncedAt: Timestamp.now(),
+                        hourly_sourceId: r.sourceId,
+                    };
+                    // 取り込み先が存在しない場合のみ store / date を補完（既存フィールドは触らない）
+                    if (!r.exists) {
+                        payload.store = r.storeName;
+                        payload.date = getTimestampFromDateString(r.date);
+                    }
+                    batch.set(doc(db, dailyReportsPath, r.targetDocId), payload, { merge: true });
+                });
+                try {
+                    await batch.commit();
+                    success += chunk.length;
+                } catch (error) {
+                    console.error('時間帯データの書き込みエラー: ', error);
+                    errors += chunk.length;
+                }
+                setProgress({ done: Math.min(i + BATCH_SIZE, rows.length), total: rows.length });
+            }
+            setResult({ success, skipped: preview.skipped, errors });
+            setMessage(errors === 0
+                ? { text: '取り込みが完了しました。', type: 'success' }
+                : { text: '一部の書き込みでエラーが発生しました。コンソールを確認してください。', type: 'error' });
+        } finally {
+            setIsExecuting(false);
+        }
+    };
+
+    const formatNum = (v) => (typeof v === 'number' ? v.toLocaleString() : '—');
+    const rowClass = (level) => level === 'danger' ? 'bg-red-50' : level === 'warn' ? 'bg-yellow-50' : '';
+
+    const loadRollbackTargets = async () => {
+        setRollbackLoading(true);
+        try {
+            const snap = await getDocs(collection(db, dailyReportsPath));
+            const ids = snap.docs.filter(d => d.data().hourly_syncedAt).map(d => d.id);
+            setRollbackTargets(ids);
+        } catch (error) {
+            console.error('削除対象の取得エラー: ', error);
+            setRollbackTargets([]);
+        } finally {
+            setRollbackLoading(false);
+        }
+    };
+
+    const handleRollbackSectionToggle = (e) => {
+        if (e.target.open && rollbackTargets === null) {
+            loadRollbackTargets();
+        }
+    };
+
+    const handleRollback = async () => {
+        if (!rollbackTargets || rollbackTargets.length === 0) return;
+        const confirmed = window.confirm(
+            `${rollbackTargets.length}件のドキュメントから時間帯データを削除します。\n\n` +
+            'sales / customers / waste_* / weather など既存データは変更されません。\n\nよろしいですか？'
+        );
+        if (!confirmed) return;
+
+        setRollbackExecuting(true);
+        setRollbackResult(null);
+        setRollbackProgress({ done: 0, total: rollbackTargets.length });
+        try {
+            const { success, failed } = await rollbackHourly(rollbackTargets, setRollbackProgress);
+            setRollbackResult({ success, failed });
+            setRollbackTargets([]);
+        } finally {
+            setRollbackExecuting(false);
+        }
+    };
+
+    return (
+        <div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">時間帯取込</h1>
+            <p className="text-gray-600 mb-6">作業割当アプリの1時間ごとの客数・売上データを日報に取り込みます。プレビューで内容を確認してから実行してください。</p>
+
+            <div className="bg-white p-6 rounded-lg shadow mb-6">
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">開始日</label>
+                        <input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); resetPreview(); }} className="block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">終了日</label>
+                        <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); resetPreview(); }} className="block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">店舗</label>
+                        <select value={storeFilter} onChange={(e) => { setStoreFilter(e.target.value); resetPreview(); }} className="block w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                            <option value="all">全店</option>
+                            {stores.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                        </select>
+                    </div>
+                    <div className="flex gap-3">
+                        <button onClick={handlePreview} disabled={isPreviewing || isExecuting} className="flex-1 bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-400">
+                            {isPreviewing ? '取得中...' : 'プレビュー'}
+                        </button>
+                        {/* result がセット済み = 実行完了。再プレビューするまで押せないようにして二重実行を防ぐ */}
+                        <button onClick={handleExecute} disabled={!preview || preview.rows.length === 0 || isExecuting || isPreviewing || !!result} className="flex-1 bg-green-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-green-700 disabled:bg-gray-400">
+                            {isExecuting ? '実行中...' : result ? '実行済み' : '取り込み実行'}
+                        </button>
+                    </div>
+                </div>
+
+                {progress && (
+                    <p className="mt-4 text-center text-sm font-semibold text-gray-700">
+                        {progress.done}件 / 全{progress.total}件
+                    </p>
+                )}
+                {result && (
+                    <div className="mt-4 flex justify-center gap-6 text-sm font-semibold">
+                        <span className="text-green-700">成功: {result.success}件</span>
+                        <span className="text-gray-600">スキップ: {result.skipped}件</span>
+                        <span className="text-red-700">エラー: {result.errors}件</span>
+                    </div>
+                )}
+                {message && (
+                    <p className={`mt-4 text-center p-3 rounded-lg ${message.type === 'error' ? 'bg-red-100 text-red-700' : message.type === 'info' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>{message.text}</p>
+                )}
+            </div>
+
+            {preview && (
+                <div className="bg-white p-6 rounded-lg shadow">
+                    <div className="flex items-center justify-between mb-4">
+                        <h2 className="text-xl font-semibold">プレビュー（{preview.rows.length}件）</h2>
+                        {preview.skipped > 0 && <span className="text-sm text-gray-500">時間帯データが空のためスキップ: {preview.skipped}件</span>}
+                    </div>
+                    <p className="text-sm text-gray-500 mb-4">⚠️ や 🔴 が付いた行も取り込みは実行されます（警告は表示のみ）。データの修正は現場の判断で行ってください。</p>
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="bg-gray-100 text-gray-700">
+                                    <th className="px-3 py-2 text-left whitespace-nowrap">日付</th>
+                                    <th className="px-3 py-2 text-left whitespace-nowrap">店舗</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">時間数</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">日販売上</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">時間帯合計</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">差</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">日販客数</th>
+                                    <th className="px-3 py-2 text-right whitespace-nowrap">時間帯客数</th>
+                                    <th className="px-3 py-2 text-left whitespace-nowrap">判定</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {preview.rows.map(r => (
+                                    <tr key={r.targetDocId} className={`border-b ${rowClass(r.level)}`}>
+                                        <td className="px-3 py-2 whitespace-nowrap">{r.date}</td>
+                                        <td className="px-3 py-2 whitespace-nowrap">{r.storeName}</td>
+                                        <td className="px-3 py-2 text-right">{r.hoursFilled}</td>
+                                        <td className="px-3 py-2 text-right">{formatNum(r.sales)}</td>
+                                        <td className="px-3 py-2 text-right">{formatNum(r.salesSum)}</td>
+                                        <td className="px-3 py-2 text-right">{typeof r.sales === 'number' ? (r.sales - r.salesSum).toLocaleString() : '—'}</td>
+                                        <td className="px-3 py-2 text-right">{formatNum(r.customers)}</td>
+                                        <td className="px-3 py-2 text-right">{formatNum(r.custSum)}</td>
+                                        <td className="px-3 py-2 whitespace-nowrap">{r.labels.join(' ')}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            )}
+
+            <details className="mt-6 bg-white p-6 rounded-lg shadow border border-red-200" onToggle={handleRollbackSectionToggle}>
+                <summary className="cursor-pointer text-lg font-semibold text-red-700 select-none">取り込んだデータを削除</summary>
+                <div className="mt-4 space-y-4">
+                    <p className="text-sm text-gray-600">
+                        daily_reports から時間帯データ（hourlyData と hourly_* 6フィールド）のみを削除します。
+                        売上・客数・廃棄・天気など既存データには触れません。
+                    </p>
+                    {rollbackLoading && <p className="text-sm text-gray-500">対象件数を取得中...</p>}
+                    {rollbackTargets !== null && !rollbackLoading && (
+                        <p className="text-sm font-semibold text-gray-800">
+                            削除対象：<span className="text-red-700">{rollbackTargets.length}件</span>のドキュメント
+                        </p>
+                    )}
+                    {rollbackProgress && (
+                        <p className="text-center text-sm font-semibold text-gray-700">
+                            {rollbackProgress.done}件 / 全{rollbackProgress.total}件
+                        </p>
+                    )}
+                    {rollbackResult && (
+                        <div className="flex justify-center gap-6 text-sm font-semibold">
+                            <span className="text-green-700">成功: {rollbackResult.success}件</span>
+                            <span className="text-red-700">失敗: {rollbackResult.failed}件</span>
+                        </div>
+                    )}
+                    <button
+                        onClick={handleRollback}
+                        disabled={rollbackLoading || rollbackExecuting || !rollbackTargets || rollbackTargets.length === 0}
+                        className="bg-red-600 text-white font-bold py-2 px-6 rounded-lg shadow-md hover:bg-red-700 disabled:bg-gray-400"
+                    >
+                        {rollbackExecuting ? '削除中...' : '時間帯データを削除する'}
+                    </button>
+                </div>
+            </details>
+        </div>
+    );
+};
+
 const AiForecastPage = () => {
     const [messages, setMessages] = useState([]);
     const [userInput, setUserInput] = useState('');
@@ -3365,6 +3893,7 @@ function AppContent() {
       case 'haikiInput': return <HaikiInputPage stores={stores} employees={employees} />;
       case 'bulkInput': return <BulkInputPage stores={stores} />;
       case 'csv': return <CsvPage dateRange={{startDate, endDate}} />;
+      case 'hourlySync': return <HourlySyncPage stores={stores} />;
       case 'ai': return <AiAnalysisPage {...pageProps} />;
       case 'ai_forecast': return <AiForecastPage />;
       default: return <div>ページが見つかりません</div>;
@@ -3409,6 +3938,7 @@ function AppContent() {
                 <NavItem icon={<TrashIcon />} label="廃棄入力" isActive={currentPage === 'haikiInput'} onClick={() => setCurrentPage('haikiInput')} />
                 <NavItem icon={<UploadCloudIcon />} label="前年一括入力" isActive={currentPage === 'bulkInput'} onClick={() => setCurrentPage('bulkInput')} />
                 <NavItem icon={<CsvIcon />} label="CSV入出力" isActive={currentPage === 'csv'} onClick={() => setCurrentPage('csv')} />
+                <NavItem icon={<ClockIcon />} label="時間帯取込" isActive={currentPage === 'hourlySync'} onClick={() => setCurrentPage('hourlySync')} />
               </div>
             </div>
         </nav>
