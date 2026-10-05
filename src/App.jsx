@@ -177,10 +177,12 @@ const getExtendedLyFetchRange = (startDateLY, endDateLY) => {
 const getLySourceValue = (report, key) => {
     if (!report) return undefined;
     const direct = report[key];
-    if (direct != null && direct !== '') return direct;
+    const hasDirect = direct != null && direct !== '';
+    // 0 は「未入力のまま保存された値」の可能性があるため、一括入力の値があればそちらを優先する
+    if (hasDirect && direct !== 0) return direct;
     const lyField = report[`${key}_ly`];
     if (lyField != null && lyField !== '') return lyField;
-    return undefined;
+    return hasDirect ? direct : undefined;
 };
 
 const getLyCustomerSpend = (report) => {
@@ -814,24 +816,46 @@ const NippoInputPage = ({ stores, employees }) => {
             setIsLoading(false);
             return;
         }
+        // 空欄の項目は保存しない（既存の値を0で上書きしないため）
+        const salesText = String(formData.sales).trim();
+        const customersText = String(formData.customers).trim();
+        if (salesText === '' && customersText === '') {
+            setMessage({ type: 'error', text: '日販または客数を入力してください。' });
+            setIsLoading(false);
+            return;
+        }
+        if ((salesText !== '' && isNaN(Number(salesText))) || (customersText !== '' && isNaN(Number(customersText)))) {
+            setMessage({ type: 'error', text: '日販・客数は半角の数値で入力してください。' });
+            setIsLoading(false);
+            return;
+        }
         const docId = `${date}_${storeName}`;
         try {
-            const salesInYen = Number(formData.sales) * 1000 || 0;
-            const customersCount = Number(formData.customers) || 0;
+            const docRef = doc(db, dailyReportsPath, docId);
+            let salesInYen = salesText !== '' ? Number(salesText) * 1000 : null;
+            let customersCount = customersText !== '' ? Number(customersText) : null;
             const payload = {
                 store: storeName,
                 date: getTimestampFromDateString(date),
                 inputBy_sales: inputBy,
                 updatedAt_sales: Timestamp.now(),
-                sales: salesInYen,
-                customers: customersCount,
-                customer_spend: (salesInYen > 0 && customersCount > 0) ? (salesInYen / customersCount) : 0,
             };
+            if (salesInYen !== null) payload.sales = salesInYen;
+            if (customersCount !== null) payload.customers = customersCount;
+            // 片方だけ入力された場合は、保存済みの値と組み合わせて客単価を計算する
+            if (salesInYen === null || customersCount === null) {
+                const existing = (await getDoc(docRef)).data() || {};
+                if (salesInYen === null && typeof existing.sales === 'number') salesInYen = existing.sales;
+                if (customersCount === null && typeof existing.customers === 'number') customersCount = existing.customers;
+            }
+            if (salesInYen !== null && customersCount !== null) {
+                payload.customer_spend = (salesInYen > 0 && customersCount > 0) ? (salesInYen / customersCount) : 0;
+            }
             if (weatherData) {
                 payload.weather = weatherData;
             }
 
-            await setDoc(doc(db, dailyReportsPath, docId), payload, { merge: true });
+            await setDoc(docRef, payload, { merge: true });
             setMessage({ type: 'success', text: '日販データを保存しました！' });
             setFormData({ sales: '', customers: '' });
             setInputBy('');
@@ -962,24 +986,41 @@ const HaikiInputPage = ({ stores, employees }) => {
             setIsLoading(false);
             return;
         }
+        const wasteKeys = HAIKI_WASTE_FIELDS.map(f => f.key);
+        const enteredKeys = wasteKeys.filter(key => String(formData[key]).trim() !== '');
+        if (enteredKeys.length === 0) {
+            setMessage({ type: 'error', text: '廃棄・値下げの金額を1項目以上入力してください。' });
+            setIsLoading(false);
+            return;
+        }
+        if (enteredKeys.some(key => isNaN(Number(formData[key])))) {
+            setMessage({ type: 'error', text: '金額は半角の数値で入力してください。' });
+            setIsLoading(false);
+            return;
+        }
         const docId = `${date}_${storeName}`;
         try {
+            const docRef = doc(db, dailyReportsPath, docId);
             const payload = {
                 store: storeName,
                 date: getTimestampFromDateString(date),
                 inputBy_waste: inputBy,
                 updatedAt_waste: Timestamp.now(),
-                waste_product: Number(formData.waste_product) || 0,
-                waste_owner_8: Number(formData.waste_owner_8) || 0,
-                waste_owner_10: Number(formData.waste_owner_10) || 0,
-                waste_promo_8: Number(formData.waste_promo_8) || 0,
-                waste_promo_10: Number(formData.waste_promo_10) || 0,
             };
+            // 空欄の項目は、保存済みの値があれば上書きしない。まだ値が無い場合のみ0を入れる
+            const existing = (await getDoc(docRef)).data() || {};
+            wasteKeys.forEach(key => {
+                if (enteredKeys.includes(key)) {
+                    payload[key] = Number(formData[key]);
+                } else if (existing[key] == null) {
+                    payload[key] = 0;
+                }
+            });
              if (weatherData) {
                 payload.weather = weatherData;
             }
 
-            await setDoc(doc(db, dailyReportsPath, docId), payload, { merge: true });
+            await setDoc(docRef, payload, { merge: true });
             setMessage({ type: 'success', text: '廃棄データを保存しました！' });
             setFormData({ waste_product: '', waste_owner_8: '', waste_owner_10: '', waste_promo_8: '', waste_promo_10: '' });
             setInputBy('');
@@ -3213,14 +3254,15 @@ const CsvPage = ({ dateRange }) => {
                 return {
                     date: getLocalDateString(data.date.toDate()),
                     store: data.store,
-                    sales: data.sales || 0,
-                    customers: data.customers || 0,
-                    customer_spend: data.customer_spend || 0,
-                    waste_product: data.waste_product || 0,
-                    waste_owner_8: data.waste_owner_8 || 0,
-                    waste_owner_10: data.waste_owner_10 || 0,
-                    waste_promo_8: data.waste_promo_8 || 0,
-                    waste_promo_10: data.waste_promo_10 || 0,
+                    // 未入力の項目は空欄で出力する（再インポート時に0で上書きしないため）
+                    sales: data.sales ?? '',
+                    customers: data.customers ?? '',
+                    customer_spend: data.customer_spend ?? '',
+                    waste_product: data.waste_product ?? '',
+                    waste_owner_8: data.waste_owner_8 ?? '',
+                    waste_owner_10: data.waste_owner_10 ?? '',
+                    waste_promo_8: data.waste_promo_8 ?? '',
+                    waste_promo_10: data.waste_promo_10 ?? '',
                     weather_code: data.weather?.weatherCode ?? '',
                     max_temp: data.weather?.maxTemp ?? '',
                     precipitation: data.weather?.precipitation ?? '',
@@ -3276,47 +3318,61 @@ const CsvPage = ({ dateRange }) => {
             header: true,
             skipEmptyLines: true,
             complete: async (results) => {
-                const batch = writeBatch(db);
-                let count = 0;
+                const numericKeys = ['sales', 'customers', 'customer_spend', 'waste_product', 'waste_owner_8', 'waste_owner_10', 'waste_promo_8', 'waste_promo_10'];
+                const hasNumber = (value) => value != null && String(value).trim() !== '' && !isNaN(Number(value));
+                const writes = [];
+                let skipped = 0;
                 results.data.forEach(row => {
-                    const date = row.date;
-                    const store = row.store;
-                    if (date && store) {
-                        const docId = `${date}_${store}`;
-                        const docRef = doc(db, dailyReportsPath, docId);
-                        const payload = {
-                            date: getTimestampFromDateString(date),
-                            store: store,
-                            sales: Number(row.sales) || 0,
-                            customers: Number(row.customers) || 0,
-                            customer_spend: Number(row.customer_spend) || 0,
-                            waste_product: Number(row.waste_product) || 0,
-                            waste_owner_8: Number(row.waste_owner_8) || 0,
-                            waste_owner_10: Number(row.waste_owner_10) || 0,
-                            waste_promo_8: Number(row.waste_promo_8) || 0,
-                            waste_promo_10: Number(row.waste_promo_10) || 0,
-                        };
-                        if(row.weather_code || row.max_temp || row.precipitation) {
-                            payload.weather = {
-                                weatherCode: Number(row.weather_code) || 0,
-                                maxTemp: Number(row.max_temp) || 0,
-                                precipitation: Number(row.precipitation) || 0,
-                            }
-                        }
-                        batch.set(docRef, payload, { merge: true });
-                        count++;
+                    const date = (row.date || '').trim();
+                    const store = (row.store || '').trim();
+                    // 日付は YYYY-MM-DD 形式のみ受け付ける（Excelで 2025/1/5 等に変わった行は取り込まない）
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !store) {
+                        skipped++;
+                        return;
                     }
+                    const payload = {
+                        date: getTimestampFromDateString(date),
+                        store: store,
+                    };
+                    // CSVに無い列・空欄のセルは書き込まない（既存の値を0で上書きしないため）
+                    numericKeys.forEach(key => {
+                        if (hasNumber(row[key])) payload[key] = Number(row[key]);
+                    });
+                    if(row.weather_code || row.max_temp || row.precipitation) {
+                        payload.weather = {
+                            weatherCode: Number(row.weather_code) || 0,
+                            maxTemp: Number(row.max_temp) || 0,
+                            precipitation: Number(row.precipitation) || 0,
+                        }
+                    }
+                    writes.push({ docRef: doc(db, dailyReportsPath, `${date}_${store}`), payload });
                 });
 
+                let success = 0, failed = 0, lastError = null;
+                const BATCH_SIZE = 400;   // writeBatch の上限500件に対する安全マージン
                 try {
-                    await batch.commit();
-                    setMessage({ text: `${count}件のデータをインポートしました。`, type: 'success' });
-                } catch (error) {
-                    console.error("データのインポートエラー: ", error);
-                    setMessage({ text: `インポート中にエラーが発生しました: ${error.message}`, type: 'error' });
+                    for (let i = 0; i < writes.length; i += BATCH_SIZE) {
+                        const chunk = writes.slice(i, i + BATCH_SIZE);
+                        const batch = writeBatch(db);
+                        chunk.forEach(w => batch.set(w.docRef, w.payload, { merge: true }));
+                        try {
+                            await batch.commit();
+                            success += chunk.length;
+                        } catch (error) {
+                            console.error("データのインポートエラー: ", error);
+                            failed += chunk.length;
+                            lastError = error;
+                        }
+                    }
+                    const skippedText = skipped > 0 ? `（日付の形式が不正、または店舗が空のためスキップ: ${skipped}行）` : '';
+                    if (failed > 0) {
+                        setMessage({ text: `インポート中にエラーが発生しました。成功: ${success}件 / 失敗: ${failed}件${skippedText} ${lastError?.message || ''}`, type: 'error' });
+                    } else {
+                        setMessage({ text: `${success}件のデータをインポートしました。${skippedText}`, type: skipped > 0 && success === 0 ? 'error' : 'success' });
+                    }
                 } finally {
                     setIsProcessing(false);
-                    setTimeout(() => setMessage(''), 5000);
+                    setTimeout(() => setMessage(''), 8000);
                 }
             },
             error: (error) => {
@@ -3340,7 +3396,7 @@ const CsvPage = ({ dateRange }) => {
                 </div>
                 <div className="border-t pt-8">
                     <h2 className="text-xl font-semibold mb-4">データのインポート</h2>
-                    <p className="mb-4 text-gray-600">CSVファイルを選択してデータを一括で登録・更新します。フォーマットはエクスポートされたファイルと同じ形式にしてください。</p>
+                    <p className="mb-4 text-gray-600">CSVファイルを選択してデータを一括で登録・更新します。フォーマットはエクスポートされたファイルと同じ形式にしてください。CSVに無い列や空欄のセルは変更されません。</p>
                     <input type="file" accept=".csv" onChange={handleImport} disabled={isProcessing || !isScriptReady} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 disabled:opacity-50"/>
                 </div>
                 {message && <p className={`mt-4 text-center p-3 rounded-lg ${message.type === 'error' ? 'bg-red-100 text-red-700' : message.type === 'info' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700'}`}>{message.text}</p>}
