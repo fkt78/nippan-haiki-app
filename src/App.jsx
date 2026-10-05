@@ -105,6 +105,7 @@ const RefreshCwIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" h
 const BrainIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.5 2.25A2.25 2.25 0 0 1 11.75 0h.5A2.25 2.25 0 0 1 14.5 2.25v1.5a.25.25 0 0 1-.25.25h-4.5a.25.25 0 0 1-.25-.25v-1.5Zm-3 3A2.25 2.25 0 0 0 4.25 3h-.5A2.25 2.25 0 0 0 1.5 5.25v1.5a.25.25 0 0 0 .25.25h4.5a.25.25 0 0 0 .25-.25v-1.5Zm9 0A2.25 2.25 0 0 1 17.75 3h.5A2.25 2.25 0 0 1 22.5 5.25v1.5a.25.25 0 0 1-.25.25h-4.5a.25.25 0 0 1-.25-.25v-1.5ZM12 12a2.25 2.25 0 0 0-2.25-2.25h-1.5a.25.25 0 0 0-.25.25v4.5a.25.25 0 0 0 .25.25h1.5A2.25 2.25 0 0 0 12 12Zm0 0a2.25 2.25 0 0 1 2.25-2.25h1.5a.25.25 0 0 1 .25.25v4.5a.25.25 0 0 1-.25.25h-1.5A2.25 2.25 0 0 1 12 12Z"/><path d="M4.25 18.25a.25.25 0 0 0-.25.25v1.5A2.25 2.25 0 0 0 6.25 24h.5A2.25 2.25 0 0 0 9 21.75v-1.5a.25.25 0 0 0-.25-.25h-4.5Zm9 0a.25.25 0 0 1 .25.25v1.5A2.25 2.25 0 0 1 15.25 24h-.5A2.25 2.25 0 0 1 12.5 21.75v-1.5a.25.25 0 0 1 .25-.25h.5Z"/></svg>;
 const MicIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>;
 const DatabaseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>;
+const NoteIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>;
 const ClockIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>;
 
 // ==============================================================================
@@ -2840,390 +2841,702 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
     );
 };
 
-const AiAnalysisPage = ({ dateRange, onRefresh }) => {
-    const { data: reports, isLoading } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
-    const [userInput, setUserInput] = useState('');
-    const [messages, setMessages] = useState([]);
-    const [isAiLoading, setIsAiLoading] = useState(false);
+// ==============================================================================
+// AI分析（Gemini）共通処理
+// ==============================================================================
+
+// APIキーはビルド時に .env の VITE_GEMINI_API_KEY から読み込む
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || '';
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+// 文章生成以外の用途のモデルは候補から外す
+const GEMINI_EXCLUDE_PATTERN = /(image|tts|audio|live|embedding|lite|robotics|computer|learnlm|gemma|aqa|nano|transcribe|omni|customtools)/i;
+
+// AI設定（経営方針メモ・出来事の記録・使用モデル）の保存先
+const aiSettingsPath = `${appBasePath}/ai_settings`;
+const AI_SETTINGS_DOC_ID = 'main';
+const DEFAULT_AI_SETTINGS = { policy: '', events: [], model: '' };
+
+const useAiSettings = () => {
+    const [settings, setSettings] = useState(DEFAULT_AI_SETTINGS);
+    useEffect(() => {
+        return onSnapshot(doc(db, aiSettingsPath, AI_SETTINGS_DOC_ID), (snap) => {
+            setSettings({ ...DEFAULT_AI_SETTINGS, ...(snap.exists() ? snap.data() : {}) });
+        }, (error) => {
+            console.error("AI設定の取得中にエラーが発生しました: ", error);
+        });
+    }, []);
+    return settings;
+};
+
+const saveAiSettings = (patch) =>
+    setDoc(doc(db, aiSettingsPath, AI_SETTINGS_DOC_ID), { ...patch, updatedAt: Timestamp.now() }, { merge: true });
+
+const describeGeminiError = (status, message) => {
+    if (status === 400 && /API key not valid/i.test(message || '')) return 'APIキーが無効です。キーの値を確認してください。';
+    if (status === 403) return `このサイトからの利用が許可されていません。APIキーの制限設定を確認してください。（${message}）`;
+    if (status === 429) return `利用上限に達しました。しばらく待ってからお試しください。（${message}）`;
+    return message || `HTTP ${status}`;
+};
+
+// このAPIキーで使える文章生成モデルの一覧
+const fetchGeminiModels = async () => {
+    const response = await fetch(`${GEMINI_BASE_URL}/models?pageSize=200`, { headers: { 'x-goog-api-key': GEMINI_API_KEY } });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(describeGeminiError(response.status, result.error?.message));
+    return (result.models || [])
+        .filter(m => m?.name && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+        .map(m => m.name.replace(/^models\//, ''))
+        .filter(name => name.startsWith('gemini-') && !GEMINI_EXCLUDE_PATTERN.test(name));
+};
+
+// モデル未指定（自動）のときに試す候補。一覧が取れればその中の新しい flash 系を優先する
+let cachedAutoGeminiModels = null;
+const getAutoGeminiModels = async () => {
+    if (cachedAutoGeminiModels) return cachedAutoGeminiModels;
+    try {
+        const listed = await fetchGeminiModels();
+        const flash = listed.filter(name => /flash/.test(name));
+        const stable = flash
+            .filter(name => !/preview|exp|latest/.test(name))
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+        const candidates = [
+            ...(listed.includes('gemini-flash-latest') ? ['gemini-flash-latest'] : []),
+            ...stable.slice(0, 2),
+            ...flash.slice(0, 1),
+        ];
+        if (candidates.length > 0) {
+            cachedAutoGeminiModels = [...new Set(candidates)];
+            return cachedAutoGeminiModels;
+        }
+    } catch (error) {
+        console.warn('モデル一覧の取得に失敗:', error.message || error);
+    }
+    return ['gemini-flash-latest', 'gemini-2.5-flash'];
+};
+
+// Gemini に問い合わせる。contents は [{ role: 'user' | 'model', parts: [{ text }] }] の会話履歴
+const callGemini = async ({ systemText, contents, model }) => {
+    if (!GEMINI_API_KEY) throw new Error('APIキーが設定されていません。');
+    const candidates = model ? [model] : await getAutoGeminiModels();
+    let lastError = '利用できるモデルが見つかりませんでした。';
+    for (const name of candidates) {
+        const response = await fetch(`${GEMINI_BASE_URL}/models/${name}:generateContent`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+            body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemText }] },
+                contents,
+                generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
+            }),
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            lastError = describeGeminiError(response.status, result.error?.message);
+            if (response.status === 404) continue;   // このモデルは使えない → 次の候補へ
+            throw new Error(lastError);
+        }
+        const text = (result.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+        if (text) return { text, model: name };
+        lastError = `回答が空でした（${result.promptFeedback?.blockReason || result.candidates?.[0]?.finishReason || '理由不明'}）`;
+    }
+    throw new Error(lastError);
+};
+
+// 音声入力（対応ブラウザのみ。非対応の場合 isSupported が false になる）
+const useSpeechInput = (onResult) => {
     const [isListening, setIsListening] = useState(false);
     const recognitionRef = useRef(null);
+    const isSupported = typeof window !== 'undefined' && 'webkitSpeechRecognition' in window;
 
     useEffect(() => {
-        if (!('webkitSpeechRecognition' in window)) {
-            console.error("音声認識はサポートされていません");
-            return;
-        }
+        if (!isSupported) return;
         const recognition = new window.webkitSpeechRecognition();
         recognition.continuous = false;
         recognition.lang = 'ja-JP';
         recognition.interimResults = false;
 
         recognition.onstart = () => setIsListening(true);
-        recognition.onresult = (event) => setUserInput(event.results[0][0].transcript);
+        recognition.onresult = (event) => onResult(event.results[0][0].transcript);
         recognition.onerror = (event) => {
             console.error('音声認識エラー', event.error);
             setIsListening(false);
         };
         recognition.onend = () => setIsListening(false);
-        
+
         recognitionRef.current = recognition;
+        return () => recognition.abort();
     }, []);
 
-    const handleMicClick = () => {
+    const toggle = () => {
+        if (!recognitionRef.current) return;
         if (isListening) {
             recognitionRef.current.stop();
         } else {
             recognitionRef.current.start();
         }
     };
+    return { isSupported, isListening, toggle };
+};
 
-    // ローカルデータ分析関数
-    const analyzeDataLocally = (question, data) => {
-        const questionLower = question.toLowerCase();
-        
-        // データの基本統計を計算
-        const validReports = data.filter(r => r.sales && r.sales > 0);
-        if (validReports.length === 0) {
-            return "分析可能なデータがありません。期間を選択してデータを確認してください。";
-        }
+// ------------------------------------------------------------------------------
+// AIに渡す集計データの作成（計算はアプリ側で行い、AIには解釈を任せる）
+// ------------------------------------------------------------------------------
 
-        const totalSales = validReports.reduce((sum, r) => sum + (r.sales || 0), 0);
-        const avgSales = totalSales / validReports.length;
-        const totalCustomers = validReports.reduce((sum, r) => sum + (r.customers || 0), 0);
-        const avgCustomers = totalCustomers / validReports.length;
-        const totalWaste = validReports.reduce((sum, r) => sum + (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0), 0);
-        const avgWaste = totalWaste / validReports.length;
-        const avgCustomerSpend = avgSales / avgCustomers || 0;
+const aiYen = (value) => (value == null || !isFinite(value)) ? '-' : Math.round(value).toLocaleString();
+const aiPct = (value) => (value == null || !isFinite(value)) ? '-' : `${value.toFixed(2)}%`;
+const aiDiffPct = (cy, ly) => (cy != null && ly > 0) ? `${cy >= ly ? '+' : ''}${((cy / ly - 1) * 100).toFixed(1)}%` : '-';
+const aiSum = (rows, key) => rows.reduce((sum, r) => sum + (r[key] || 0), 0);
+const AI_WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];   // 月〜日
+const AI_RAIN_MM = 5;                             // この降水量以上を「雨の日」とする
+const AI_DAILY_ROWS_MAX_DAYS = 93;                // これより長い期間は日別データを渡さない
 
-        // 売上に関する質問
-        if (questionLower.includes('売上') || questionLower.includes('売り上げ')) {
-            const maxSales = Math.max(...validReports.map(r => r.sales || 0));
-            const minSales = Math.min(...validReports.map(r => r.sales || 0));
-            const maxSalesReport = validReports.find(r => r.sales === maxSales);
-            const minSalesReport = validReports.find(r => r.sales === minSales);
-            
-            if (questionLower.includes('高い') || questionLower.includes('最大') || questionLower.includes('最高')) {
-                return `最高売上は ${getLocalDateString(maxSalesReport.date.toDate())} の ${maxSalesReport.store} で ¥${maxSalesReport.sales.toLocaleString()} でした。\n客数: ${maxSalesReport.customers}人、客単価: ¥${Math.round((maxSalesReport.sales / maxSalesReport.customers) || 0).toLocaleString()}\n天気: ${maxSalesReport.weather ? `${maxSalesReport.weather.maxTemp}°C` : '情報なし'}`;
-            }
-            if (questionLower.includes('低い') || questionLower.includes('最小') || questionLower.includes('最低')) {
-                return `最低売上は ${getLocalDateString(minSalesReport.date.toDate())} の ${minSalesReport.store} で ¥${minSalesReport.sales.toLocaleString()} でした。\n客数: ${minSalesReport.customers}人、客単価: ¥${Math.round((minSalesReport.sales / minSalesReport.customers) || 0).toLocaleString()}\n天気: ${minSalesReport.weather ? `${minSalesReport.weather.maxTemp}°C` : '情報なし'}`;
-            }
-            if (questionLower.includes('平均')) {
-                return `選択期間の平均売上は ¥${Math.round(avgSales).toLocaleString()} です。\n最高: ¥${maxSales.toLocaleString()}、最低: ¥${minSales.toLocaleString()}`;
-            }
-            return `売上統計:\n平均: ¥${Math.round(avgSales).toLocaleString()}\n最高: ¥${maxSales.toLocaleString()} (${getLocalDateString(maxSalesReport.date.toDate())}, ${maxSalesReport.store})\n最低: ¥${minSales.toLocaleString()} (${getLocalDateString(minSalesReport.date.toDate())}, ${minSalesReport.store})`;
-        }
-
-        // 客数に関する質問
-        if (questionLower.includes('客数') || questionLower.includes('来店')) {
-            const maxCustomers = Math.max(...validReports.map(r => r.customers || 0));
-            const minCustomers = Math.min(...validReports.map(r => r.customers || 0));
-            const maxCustomersReport = validReports.find(r => r.customers === maxCustomers);
-            const minCustomersReport = validReports.find(r => r.customers === minCustomers);
-            
-            return `客数統計:\n平均: ${Math.round(avgCustomers)}人\n最高: ${maxCustomers}人 (${getLocalDateString(maxCustomersReport.date.toDate())}, ${maxCustomersReport.store})\n最低: ${minCustomers}人 (${getLocalDateString(minCustomersReport.date.toDate())}, ${minCustomersReport.store})`;
-        }
-
-        // 客単価に関する質問
-        if (questionLower.includes('客単価') || questionLower.includes('単価')) {
-            const customerSpends = validReports.map(r => (r.sales || 0) / (r.customers || 1));
-            const maxSpend = Math.max(...customerSpends);
-            const minSpend = Math.min(...customerSpends);
-            const maxSpendReport = validReports[customerSpends.indexOf(maxSpend)];
-            const minSpendReport = validReports[customerSpends.indexOf(minSpend)];
-            
-            return `客単価統計:\n平均: ¥${Math.round(avgCustomerSpend).toLocaleString()}\n最高: ¥${Math.round(maxSpend).toLocaleString()} (${getLocalDateString(maxSpendReport.date.toDate())}, ${maxSpendReport.store})\n最低: ¥${Math.round(minSpend).toLocaleString()} (${getLocalDateString(minSpendReport.date.toDate())}, ${minSpendReport.store})`;
-        }
-
-        // 廃棄に関する質問
-        if (questionLower.includes('廃棄') || questionLower.includes('ロス') || questionLower.includes('値下げ')) {
-            const wasteByType = {
-                product: validReports.reduce((sum, r) => sum + (r.waste_product || 0), 0),
-                owner8: validReports.reduce((sum, r) => sum + (r.waste_owner_8 || 0), 0),
-                owner10: validReports.reduce((sum, r) => sum + (r.waste_owner_10 || 0), 0),
-                promo8: validReports.reduce((sum, r) => sum + (r.waste_promo_8 || 0), 0),
-                promo10: validReports.reduce((sum, r) => sum + (r.waste_promo_10 || 0), 0)
-            };
-            
-            const maxWaste = Math.max(...validReports.map(r => (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)));
-            const maxWasteReport = validReports.find(r => ((r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)) === maxWaste);
-            
-            return `廃棄・値下げ統計:\n合計: ¥${Math.round(totalWaste).toLocaleString()}\n平均: ¥${Math.round(avgWaste).toLocaleString()}\n内訳:\n- 商品廃棄: ¥${Math.round(wasteByType.product).toLocaleString()}\n- オーナー値下げ8%: ¥${Math.round(wasteByType.owner8).toLocaleString()}\n- オーナー値下げ10%: ¥${Math.round(wasteByType.owner10).toLocaleString()}\n- 販促値下げ8%: ¥${Math.round(wasteByType.promo8).toLocaleString()}\n- 販促値下げ10%: ¥${Math.round(wasteByType.promo10).toLocaleString()}\n\n最高廃棄日: ${getLocalDateString(maxWasteReport.date.toDate())} (${maxWasteReport.store}) - ¥${maxWaste.toLocaleString()}`;
-        }
-
-        // 店舗に関する質問
-        if (questionLower.includes('店舗') || questionLower.includes('店')) {
-            const storeStats = {};
-            validReports.forEach(r => {
-                if (!storeStats[r.store]) {
-                    storeStats[r.store] = { sales: 0, customers: 0, waste: 0, count: 0 };
-                }
-                storeStats[r.store].sales += r.sales || 0;
-                storeStats[r.store].customers += r.customers || 0;
-                storeStats[r.store].waste += (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0);
-                storeStats[r.store].count += 1;
-            });
-            
-            const storeList = Object.entries(storeStats).map(([store, stats]) => ({
-                store,
-                avgSales: stats.sales / stats.count,
-                avgCustomers: stats.customers / stats.count,
-                avgWaste: stats.waste / stats.count
-            })).sort((a, b) => b.avgSales - a.avgSales);
-            
-            return `店舗別統計:\n${storeList.map(s => `${s.store}: 平均売上 ¥${Math.round(s.avgSales).toLocaleString()}, 平均客数 ${Math.round(s.avgCustomers)}人, 平均廃棄 ¥${Math.round(s.avgWaste).toLocaleString()}`).join('\n')}`;
-        }
-
-        // 天気に関する質問
-        if (questionLower.includes('天気') || questionLower.includes('気温') || questionLower.includes('雨')) {
-            const weatherReports = validReports.filter(r => r.weather);
-            if (weatherReports.length === 0) {
-                return "天気データがありません。";
-            }
-            const avgTemp = weatherReports.reduce((sum, r) => sum + (r.weather.maxTemp || 0), 0) / weatherReports.length;
-            const maxTemp = Math.max(...weatherReports.map(r => r.weather.maxTemp || 0));
-            const minTemp = Math.min(...weatherReports.map(r => r.weather.maxTemp || 0));
-            
-            return `天気統計:\n平均気温: ${Math.round(avgTemp)}°C\n最高気温: ${maxTemp}°C\n最低気温: ${minTemp}°C`;
-        }
-
-        // デフォルト: 基本統計を返す
-        return `選択期間の基本統計:\n\n📊 売上\n平均: ¥${Math.round(avgSales).toLocaleString()}\n合計: ¥${Math.round(totalSales).toLocaleString()}\n\n👥 客数\n平均: ${Math.round(avgCustomers)}人\n合計: ${Math.round(totalCustomers)}人\n\n💰 客単価\n平均: ¥${Math.round(avgCustomerSpend).toLocaleString()}\n\n🗑️ 廃棄・値下げ\n合計: ¥${Math.round(totalWaste).toLocaleString()}\n平均: ¥${Math.round(avgWaste).toLocaleString()}\n\nデータ件数: ${validReports.length}件\n\nより詳しい情報を知りたい場合は、「売上が高い日は？」「廃棄が多い店舗は？」など具体的に質問してください。`;
+// 日報ドキュメントを集計用の行に変換（売上が入っていない日は対象外）
+const toAiRow = (report, isLy = false) => {
+    if (!report?.date || !report.store) return null;
+    const pick = (key) => isLy ? getLySourceValue(report, key) : report[key];
+    const sales = pick('sales');
+    if (typeof sales !== 'number' || sales <= 0) return null;
+    const d = report.date.toDate();
+    const row = {
+        date: getLocalDateString(d),
+        dow: d.getDay(),
+        store: report.store,
+        sales,
+        customers: Number(pick('customers')) || 0,
+        weather: report.weather || null,
+        hourlyData: report.hourly_hoursFilled === 24 ? report.hourlyData : null,
+        hasWaste: HAIKI_WASTE_FIELDS.some(f => report[f.key] != null),
+        waste: 0,
     };
+    HAIKI_WASTE_FIELDS.forEach(f => {
+        row[f.key] = Number(report[f.key]) || 0;
+        row.waste += row[f.key];
+    });
+    return row;
+};
 
-    const handleSendMessage = async () => {
-        if (!userInput.trim()) return;
+// 店舗別の行を日付ごとに合算して「全店合計」の行にする
+const toAiTotalRows = (rows) => {
+    const byDate = new Map();
+    rows.forEach(r => {
+        const total = byDate.get(r.date) || { date: r.date, dow: r.dow, sales: 0, customers: 0, waste: 0, hasWaste: false, weather: r.weather };
+        total.sales += r.sales;
+        total.customers += r.customers;
+        total.waste += r.waste;
+        total.hasWaste = total.hasWaste || r.hasWaste;
+        HAIKI_WASTE_FIELDS.forEach(f => { total[f.key] = (total[f.key] || 0) + r[f.key]; });
+        byDate.set(r.date, total);
+    });
+    return Array.from(byDate.values());
+};
 
-        const newMessages = [...messages, { role: 'user', text: userInput }];
+const aggregateAiRows = (rows) => {
+    if (rows.length === 0) return null;
+    const sales = aiSum(rows, 'sales');
+    const customers = aiSum(rows, 'customers');
+    const wasteRows = rows.filter(r => r.hasWaste);   // 廃棄の平均・率は廃棄入力のある日だけで計算する
+    const wasteSales = aiSum(wasteRows, 'sales');
+    const result = {
+        n: rows.length,
+        wasteDays: wasteRows.length,
+        salesAvg: sales / rows.length,
+        customersAvg: customers / rows.length,
+        spend: customers > 0 ? sales / customers : null,
+        wasteAvg: wasteRows.length > 0 ? aiSum(wasteRows, 'waste') / wasteRows.length : null,
+        wasteRate: wasteSales > 0 ? aiSum(wasteRows, 'waste') / wasteSales * 100 : null,
+        fields: {},
+        fieldRates: {},
+    };
+    HAIKI_WASTE_FIELDS.forEach(f => {
+        result.fields[f.key] = wasteRows.length > 0 ? aiSum(wasteRows, f.key) / wasteRows.length : null;
+        result.fieldRates[f.key] = wasteSales > 0 ? aiSum(wasteRows, f.key) / wasteSales * 100 : null;
+    });
+    return result;
+};
+
+const describeAiAggregate = (agg) => {
+    if (!agg) return 'データなし';
+    const base = `売上入力${agg.n}日 日販${aiYen(agg.salesAvg)} 客数${aiYen(agg.customersAvg)} 客単価${aiYen(agg.spend)}`;
+    if (agg.wasteDays === 0) return `${base} 廃棄・値下げデータなし`;
+    const fields = HAIKI_WASTE_FIELDS.map(f => `${f.label}${aiYen(agg.fields[f.key])}`).join(' ');
+    return `${base} 廃棄値下げ計${aiYen(agg.wasteAvg)}(${aiPct(agg.wasteRate)}) 商品廃棄率${aiPct(agg.fieldRates.waste_product)} 内訳[${fields}]`;
+};
+
+const describeAiAggregateShort = (agg) => {
+    if (!agg) return 'データなし';
+    return `${agg.n}日 日販${aiYen(agg.salesAvg)} 客数${aiYen(agg.customersAvg)} 商品廃棄率${aiPct(agg.fieldRates.waste_product)} 廃棄値下げ率${aiPct(agg.wasteRate)}`;
+};
+
+const describeAiEvent = (event) => `${event.date || '日付なし'} ${event.store || '全店'}: ${event.note}`;
+
+const buildAiDataSummary = ({ reports, reportsLY, stores, dateRange, events }) => {
+    const startStr = getLocalDateString(dateRange.startDate);
+    const endStr = getLocalDateString(dateRange.endDate);
+    const lyStartStr = getLocalDateString(dateRange.startDateLY);
+    const lyEndStr = getLocalDateString(dateRange.endDateLY);
+    const storeNames = stores.map(s => s.name);
+    const totalLabel = `${storeNames.length}店合計`;
+    const dayCount = Math.round((parseLocalDate(endStr) - parseLocalDate(startStr)) / (1000 * 60 * 60 * 24)) + 1;
+
+    const cyRows = reports.map(r => toAiRow(r)).filter(r => r && storeNames.includes(r.store) && r.date >= startStr && r.date <= endStr);
+    const lyRows = reportsLY.map(r => toAiRow(r, true)).filter(r => r && storeNames.includes(r.store) && r.date >= lyStartStr && r.date <= lyEndStr);
+    const rowsFor = (rows, name) => name === totalLabel ? toAiTotalRows(rows) : rows.filter(r => r.store === name);
+    const dayLabel = (r) => `${r.date}(${WEEKDAY_LABELS[r.dow]})`;
+
+    const lines = [];
+    lines.push(`【対象期間】${startStr}〜${endStr}（${dayCount}日間）／前年同期 ${lyStartStr}〜${lyEndStr}`);
+    lines.push('【単位と定義】金額は円、1日あたりの平均。廃棄値下げ計＝商品廃棄＋オーナー値下げ8%＋同10%＋販促値下げ8%＋同10%。率は対売上比。前年同期は同じ日付の前年。');
+    if (cyRows.length === 0) {
+        lines.push('この期間には売上データがありません。');
+        return lines.join('\n');
+    }
+
+    lines.push('', '【1. 店舗別サマリー】');
+    [...storeNames, totalLabel].forEach(name => {
+        const cy = aggregateAiRows(rowsFor(cyRows, name));
+        const ly = aggregateAiRows(rowsFor(lyRows, name));
+        lines.push(`■${name}`);
+        lines.push(`  本年: ${describeAiAggregate(cy)}`);
+        lines.push(`  前年同期: ${describeAiAggregate(ly)}`);
+        if (cy && ly) {
+            const wasteDiff = ly.wasteDays > 0
+                ? ` 廃棄値下げ計${aiDiffPct(cy.wasteAvg, ly.wasteAvg)} 商品廃棄${aiDiffPct(cy.fields.waste_product, ly.fields.waste_product)} オーナー値下げ8%${aiDiffPct(cy.fields.waste_owner_8, ly.fields.waste_owner_8)}`
+                : '';
+            lines.push(`  前年比: 日販${aiDiffPct(cy.salesAvg, ly.salesAvg)} 客数${aiDiffPct(cy.customersAvg, ly.customersAvg)} 客単価${aiDiffPct(cy.spend, ly.spend)}${wasteDiff}`);
+        }
+    });
+
+    const months = [...new Set(cyRows.map(r => r.date.slice(0, 7)))].sort();
+    if (months.length > 1) {
+        lines.push('', '【2. 月別推移】');
+        [...storeNames, totalLabel].forEach(name => {
+            lines.push(`■${name}`);
+            months.forEach(ym => {
+                const lyYm = `${Number(ym.slice(0, 4)) - 1}${ym.slice(4)}`;
+                const cy = aggregateAiRows(rowsFor(cyRows, name).filter(r => r.date.startsWith(ym)));
+                const ly = aggregateAiRows(rowsFor(lyRows, name).filter(r => r.date.startsWith(lyYm)));
+                lines.push(`  ${ym}: ${describeAiAggregate(cy)}｜前年同月: ${describeAiAggregateShort(ly)}`);
+            });
+        });
+    }
+
+    lines.push('', '【3. 曜日別（本年）】');
+    storeNames.forEach(name => {
+        lines.push(`■${name}`);
+        AI_WEEKDAY_ORDER.forEach(dow => {
+            const agg = aggregateAiRows(rowsFor(cyRows, name).filter(r => r.dow === dow));
+            if (agg) lines.push(`  ${WEEKDAY_LABELS[dow]}: ${describeAiAggregateShort(agg)}`);
+        });
+    });
+
+    lines.push('', `【4. 天気別（本年。雨の日＝降水${AI_RAIN_MM}mm以上）】`);
+    const tempBands = [[-50, 10], [10, 20], [20, 25], [25, 30], [30, 35], [35, 99]];
+    storeNames.forEach(name => {
+        const withWeather = rowsFor(cyRows, name).filter(r => r.weather);
+        if (withWeather.length === 0) return;
+        lines.push(`■${name}`);
+        lines.push(`  雨の日: ${describeAiAggregateShort(aggregateAiRows(withWeather.filter(r => (r.weather.precipitation || 0) >= AI_RAIN_MM)))}`);
+        lines.push(`  それ以外: ${describeAiAggregateShort(aggregateAiRows(withWeather.filter(r => (r.weather.precipitation || 0) < AI_RAIN_MM)))}`);
+        tempBands.forEach(([low, high]) => {
+            const agg = aggregateAiRows(withWeather.filter(r => r.weather.maxTemp >= low && r.weather.maxTemp < high));
+            if (agg) lines.push(`  最高気温${low <= -50 ? '' : low}〜${high >= 99 ? '' : high}℃: ${describeAiAggregateShort(agg)}`);
+        });
+    });
+
+    lines.push('', '【5. 注意が必要な日（本年）】');
+    const wasteRows = cyRows.filter(r => r.hasWaste);
+    lines.push('・廃棄値下げ率が高い日（上位5日）');
+    [...wasteRows].sort((a, b) => b.waste / b.sales - a.waste / a.sales).slice(0, 5).forEach(r => {
+        const fields = HAIKI_WASTE_FIELDS.filter(f => r[f.key] !== 0).map(f => `${f.label}${aiYen(r[f.key])}`).join(' ');
+        lines.push(`  ${dayLabel(r)} ${r.store}: 日販${aiYen(r.sales)} 廃棄値下げ計${aiYen(r.waste)}(${aiPct(r.waste / r.sales * 100)}) [${fields}]`);
+    });
+    const negativeRows = wasteRows.filter(r => HAIKI_WASTE_FIELDS.some(f => r[f.key] < 0));
+    lines.push(`・マイナスの値が入っている日: ${negativeRows.length}日`);
+    negativeRows.slice(0, 10).forEach(r => {
+        const fields = HAIKI_WASTE_FIELDS.filter(f => r[f.key] < 0).map(f => `${f.label}${aiYen(r[f.key])}`).join(' ');
+        lines.push(`  ${dayLabel(r)} ${r.store}: ${fields}`);
+    });
+    const outliers = [];
+    storeNames.forEach(name => {
+        const rows = rowsFor(cyRows, name);
+        const agg = aggregateAiRows(rows);
+        if (!agg) return;
+        rows.forEach(r => {
+            const ratio = r.sales / agg.salesAvg;
+            if (ratio >= 1.4 || ratio <= 0.6) outliers.push(`  ${dayLabel(r)} ${r.store}: 日販${aiYen(r.sales)} 客数${aiYen(r.customers)}（店舗平均の${Math.round(ratio * 100)}%）`);
+        });
+    });
+    lines.push(`・日販が店舗平均から40%以上離れている日: ${outliers.length}日`);
+    outliers.slice(0, 10).forEach(line => lines.push(line));
+    storeNames.forEach(name => {
+        const rows = rowsFor(cyRows, name);
+        const noWaste = rows.filter(r => !r.hasWaste).length;
+        if (rows.length < dayCount || noWaste > 0) {
+            lines.push(`・${name}: 売上未入力${dayCount - rows.length}日、売上入力ありで廃棄未入力${noWaste}日`);
+        }
+    });
+
+    lines.push('', '【6. 時間帯別（本年。24時間分そろっている日のみ）】');
+    let hasHourly = false;
+    storeNames.forEach(name => {
+        const rows = rowsFor(cyRows, name).filter(r => r.hourlyData);
+        if (rows.length === 0) return;
+        hasHourly = true;
+        const customersByHour = Array(24).fill(0);
+        const salesByHour = Array(24).fill(0);
+        rows.forEach(r => {
+            for (let h = 0; h < 24; h++) {
+                customersByHour[h] += r.hourlyData[String(h)]?.customers || 0;
+                salesByHour[h] += r.hourlyData[String(h)]?.sales || 0;
+            }
+        });
+        const salesTotal = salesByHour.reduce((a, b) => a + b, 0) || 1;
+        const dates = rows.map(r => r.date).sort();
+        lines.push(`■${name}（${rows.length}日分、${dates[0]}〜${dates[dates.length - 1]}）`);
+        lines.push(`  平均客数: ${customersByHour.map((v, h) => `${h}時${Math.round(v / rows.length)}`).join(' ')}`);
+        lines.push(`  売上構成比%: ${salesByHour.map((v, h) => `${h}時${(v / salesTotal * 100).toFixed(1)}`).join(' ')}`);
+    });
+    if (!hasHourly) lines.push('この期間には取り込み済みの時間帯データがありません。');
+
+    const relatedEvents = (events || [])
+        .filter(e => e?.note && (!e.date || (e.date >= startStr && e.date <= endStr) || (e.date >= lyStartStr && e.date <= lyEndStr)))
+        .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    lines.push('', '【7. 出来事の記録（対象期間と前年同期に該当するもの）】');
+    if (relatedEvents.length === 0) lines.push('登録なし');
+    relatedEvents.forEach(e => lines.push(`  ${describeAiEvent(e)}`));
+
+    lines.push('', '【8. 日別データ（本年）】');
+    if (dayCount > AI_DAILY_ROWS_MAX_DAYS) {
+        lines.push(`期間が${AI_DAILY_ROWS_MAX_DAYS}日を超えるため省略。個別の日については上の集計を使うこと。`);
+    } else {
+        lines.push(`日付,曜日,店舗,日販,客数,${HAIKI_WASTE_FIELDS.map(f => f.label).join(',')},最高気温,降水mm`);
+        [...cyRows].sort((a, b) => a.date === b.date ? storeNames.indexOf(a.store) - storeNames.indexOf(b.store) : a.date.localeCompare(b.date)).forEach(r => {
+            const wastes = HAIKI_WASTE_FIELDS.map(f => r.hasWaste ? r[f.key] : '').join(',');
+            lines.push(`${r.date},${WEEKDAY_LABELS[r.dow]},${r.store},${r.sales},${r.customers},${wastes},${r.weather?.maxTemp ?? ''},${r.weather?.precipitation ?? ''}`);
+        });
+    }
+
+    return lines.join('\n');
+};
+
+const AI_COMMON_RULES = `回答のルール:
+1. 数字は必ず下の「集計データ」にあるものを使う。集計済みの値がある場合は自分で計算し直さない。データに無いことは推測で埋めず、「このデータからは分かりません」と答える。
+2. 結論を先に書き、根拠となる数字を添える。
+3. 原因は断定しない。「〜と重なっています」「〜の可能性があります」のように書く。商品別のデータは無いので、商品ごとの数量には触れない。
+4. 「注意が必要な日」と「出来事の記録」に当てはまる日は、それを踏まえて解釈する。入力ミスの可能性がある値は、その旨を伝える。
+5. 日本語で、画面にそのまま表示される文章として書く。記号による装飾（*や#）や表は使わず、見出しは【】、箇条書きは「・」を使う。特に指定がなければ簡潔にまとめる。
+6. 「経営方針メモ」がある場合は、そこに書かれた考え方・基準・答え方を最優先する。`;
+
+const buildAiSystemText = ({ role, policy, dataText }) => [
+    role,
+    AI_COMMON_RULES,
+    `【経営方針メモ】\n${(policy || '').trim() || '（未登録）'}`,
+    `【集計データ】\n${dataText}`,
+].join('\n\n');
+
+const AI_ANALYSIS_ROLE = 'あなたは、コンビニエンスストア3店舗を運営する会社の経営分析担当です。経営者や店舗責任者からの質問に、アプリが実データから計算した集計データをもとに答えます。';
+
+const AI_QUICK_QUESTIONS = [
+    { label: '期間のまとめ', text: 'この期間の売上と廃棄・値下げの状況を、店舗別にまとめてください。' },
+    { label: '前年比較', text: '前年同期と比べて、良くなった点と悪くなった点を教えてください。' },
+    { label: '曜日別の傾向', text: '曜日別に見て、廃棄が多い曜日と少ない曜日、その理由として考えられることを教えてください。' },
+    { label: '天気の影響', text: '天気や気温によって、売上と廃棄はどう変わっていますか。' },
+    { label: '気になる日', text: '数字が不自然な日や、確認したほうがよい日を挙げてください。' },
+    { label: '改善の提案', text: '廃棄・値下げを減らすために、まず取り組むべきことを3つ提案してください。' },
+];
+
+// AIの回答表示（AI分析・AI売上予測で共通）
+const AiChatMessages = ({ messages, isAiLoading, emptyState, onAddPolicyNote }) => {
+    const endRef = useRef(null);
+    useEffect(() => {
+        endRef.current?.scrollIntoView({ block: 'end' });
+    }, [messages, isAiLoading]);
+
+    return (
+        <div className="flex-grow bg-white rounded-lg shadow p-6 overflow-y-auto mb-4">
+            {messages.length === 0 && emptyState}
+            {messages.map((msg, index) => (
+                <div key={index} className={`mb-4 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
+                    <div className={`inline-block max-w-full p-3 rounded-lg text-left ${msg.role === 'user' ? 'bg-blue-500 text-white' : msg.isError ? 'bg-red-100 text-red-700' : 'bg-gray-200 text-gray-800'}`}>
+                       <p style={{whiteSpace: 'pre-wrap'}}>{msg.text}</p>
+                    </div>
+                    {msg.role === 'ai' && !msg.isError && (
+                        <div className="mt-1 flex items-center gap-3 text-xs text-gray-400">
+                            {msg.model && <span>{msg.model}</span>}
+                            {onAddPolicyNote && (
+                                <button type="button" onClick={onAddPolicyNote} className="text-blue-600 hover:underline">この回答への指摘を方針メモに追記</button>
+                            )}
+                        </div>
+                    )}
+                </div>
+            ))}
+            {isAiLoading && (
+                  <div className="text-left">
+                    <div className="inline-block p-3 rounded-lg bg-gray-200 text-gray-800">
+                       <div className="flex items-center">
+                           <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse mr-2"></div>
+                           <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse mr-2 delay-75"></div>
+                           <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse delay-150"></div>
+                       </div>
+                    </div>
+                </div>
+            )}
+            <div ref={endRef}></div>
+        </div>
+    );
+};
+
+const AiChatInput = ({ userInput, setUserInput, onSend, disabled, isAiLoading, speech }) => (
+    <div className="flex">
+        <input
+            type="text"
+            value={userInput}
+            onChange={(e) => setUserInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && !e.nativeEvent.isComposing && !disabled && onSend(userInput)}
+            className="flex-grow min-w-0 p-3 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="AIへの質問を入力..."
+            disabled={disabled}
+        />
+        {speech.isSupported && (
+            <button
+                type="button"
+                onClick={speech.toggle}
+                className={`p-3 border-t border-b ${speech.isListening ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600'}`}
+            >
+                <MicIcon />
+            </button>
+        )}
+        <button
+            type="button"
+            onClick={() => onSend(userInput)}
+            disabled={disabled}
+            className="bg-blue-600 text-white font-bold py-3 px-6 rounded-r-lg hover:bg-blue-700 disabled:bg-gray-400 whitespace-nowrap"
+        >
+            {isAiLoading ? '分析中...' : '送信'}
+        </button>
+    </div>
+);
+
+// 回答への指摘を「経営方針メモ」の末尾に追記する
+const appendAiPolicyNote = async (currentPolicy) => {
+    const note = window.prompt('今後のAI分析に反映したい考え方や指摘を入力してください。\n（AI設定の「経営方針メモ」の末尾に追記されます）');
+    if (!note || !note.trim()) return false;
+    const base = (currentPolicy || '').trimEnd();
+    await saveAiSettings({ policy: `${base}${base ? '\n' : ''}・${note.trim()}` });
+    return true;
+};
+
+// ローカルデータ分析関数（APIキー未設定時の簡易分析）
+const analyzeDataLocally = (question, data) => {
+    const questionLower = question.toLowerCase();
+    
+    // データの基本統計を計算
+    const validReports = data.filter(r => r.sales && r.sales > 0);
+    if (validReports.length === 0) {
+        return "分析可能なデータがありません。期間を選択してデータを確認してください。";
+    }
+
+    const totalSales = validReports.reduce((sum, r) => sum + (r.sales || 0), 0);
+    const avgSales = totalSales / validReports.length;
+    const totalCustomers = validReports.reduce((sum, r) => sum + (r.customers || 0), 0);
+    const avgCustomers = totalCustomers / validReports.length;
+    const totalWaste = validReports.reduce((sum, r) => sum + (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0), 0);
+    const avgWaste = totalWaste / validReports.length;
+    const avgCustomerSpend = avgSales / avgCustomers || 0;
+
+    // 売上に関する質問
+    if (questionLower.includes('売上') || questionLower.includes('売り上げ')) {
+        const maxSales = Math.max(...validReports.map(r => r.sales || 0));
+        const minSales = Math.min(...validReports.map(r => r.sales || 0));
+        const maxSalesReport = validReports.find(r => r.sales === maxSales);
+        const minSalesReport = validReports.find(r => r.sales === minSales);
+        
+        if (questionLower.includes('高い') || questionLower.includes('最大') || questionLower.includes('最高')) {
+            return `最高売上は ${getLocalDateString(maxSalesReport.date.toDate())} の ${maxSalesReport.store} で ¥${maxSalesReport.sales.toLocaleString()} でした。\n客数: ${maxSalesReport.customers}人、客単価: ¥${Math.round((maxSalesReport.sales / maxSalesReport.customers) || 0).toLocaleString()}\n天気: ${maxSalesReport.weather ? `${maxSalesReport.weather.maxTemp}°C` : '情報なし'}`;
+        }
+        if (questionLower.includes('低い') || questionLower.includes('最小') || questionLower.includes('最低')) {
+            return `最低売上は ${getLocalDateString(minSalesReport.date.toDate())} の ${minSalesReport.store} で ¥${minSalesReport.sales.toLocaleString()} でした。\n客数: ${minSalesReport.customers}人、客単価: ¥${Math.round((minSalesReport.sales / minSalesReport.customers) || 0).toLocaleString()}\n天気: ${minSalesReport.weather ? `${minSalesReport.weather.maxTemp}°C` : '情報なし'}`;
+        }
+        if (questionLower.includes('平均')) {
+            return `選択期間の平均売上は ¥${Math.round(avgSales).toLocaleString()} です。\n最高: ¥${maxSales.toLocaleString()}、最低: ¥${minSales.toLocaleString()}`;
+        }
+        return `売上統計:\n平均: ¥${Math.round(avgSales).toLocaleString()}\n最高: ¥${maxSales.toLocaleString()} (${getLocalDateString(maxSalesReport.date.toDate())}, ${maxSalesReport.store})\n最低: ¥${minSales.toLocaleString()} (${getLocalDateString(minSalesReport.date.toDate())}, ${minSalesReport.store})`;
+    }
+
+    // 客数に関する質問
+    if (questionLower.includes('客数') || questionLower.includes('来店')) {
+        const maxCustomers = Math.max(...validReports.map(r => r.customers || 0));
+        const minCustomers = Math.min(...validReports.map(r => r.customers || 0));
+        const maxCustomersReport = validReports.find(r => r.customers === maxCustomers);
+        const minCustomersReport = validReports.find(r => r.customers === minCustomers);
+        
+        return `客数統計:\n平均: ${Math.round(avgCustomers)}人\n最高: ${maxCustomers}人 (${getLocalDateString(maxCustomersReport.date.toDate())}, ${maxCustomersReport.store})\n最低: ${minCustomers}人 (${getLocalDateString(minCustomersReport.date.toDate())}, ${minCustomersReport.store})`;
+    }
+
+    // 客単価に関する質問
+    if (questionLower.includes('客単価') || questionLower.includes('単価')) {
+        const customerSpends = validReports.map(r => (r.sales || 0) / (r.customers || 1));
+        const maxSpend = Math.max(...customerSpends);
+        const minSpend = Math.min(...customerSpends);
+        const maxSpendReport = validReports[customerSpends.indexOf(maxSpend)];
+        const minSpendReport = validReports[customerSpends.indexOf(minSpend)];
+        
+        return `客単価統計:\n平均: ¥${Math.round(avgCustomerSpend).toLocaleString()}\n最高: ¥${Math.round(maxSpend).toLocaleString()} (${getLocalDateString(maxSpendReport.date.toDate())}, ${maxSpendReport.store})\n最低: ¥${Math.round(minSpend).toLocaleString()} (${getLocalDateString(minSpendReport.date.toDate())}, ${minSpendReport.store})`;
+    }
+
+    // 廃棄に関する質問
+    if (questionLower.includes('廃棄') || questionLower.includes('ロス') || questionLower.includes('値下げ')) {
+        const wasteByType = {
+            product: validReports.reduce((sum, r) => sum + (r.waste_product || 0), 0),
+            owner8: validReports.reduce((sum, r) => sum + (r.waste_owner_8 || 0), 0),
+            owner10: validReports.reduce((sum, r) => sum + (r.waste_owner_10 || 0), 0),
+            promo8: validReports.reduce((sum, r) => sum + (r.waste_promo_8 || 0), 0),
+            promo10: validReports.reduce((sum, r) => sum + (r.waste_promo_10 || 0), 0)
+        };
+        
+        const maxWaste = Math.max(...validReports.map(r => (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)));
+        const maxWasteReport = validReports.find(r => ((r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0)) === maxWaste);
+        
+        return `廃棄・値下げ統計:\n合計: ¥${Math.round(totalWaste).toLocaleString()}\n平均: ¥${Math.round(avgWaste).toLocaleString()}\n内訳:\n- 商品廃棄: ¥${Math.round(wasteByType.product).toLocaleString()}\n- オーナー値下げ8%: ¥${Math.round(wasteByType.owner8).toLocaleString()}\n- オーナー値下げ10%: ¥${Math.round(wasteByType.owner10).toLocaleString()}\n- 販促値下げ8%: ¥${Math.round(wasteByType.promo8).toLocaleString()}\n- 販促値下げ10%: ¥${Math.round(wasteByType.promo10).toLocaleString()}\n\n最高廃棄日: ${getLocalDateString(maxWasteReport.date.toDate())} (${maxWasteReport.store}) - ¥${maxWaste.toLocaleString()}`;
+    }
+
+    // 店舗に関する質問
+    if (questionLower.includes('店舗') || questionLower.includes('店')) {
+        const storeStats = {};
+        validReports.forEach(r => {
+            if (!storeStats[r.store]) {
+                storeStats[r.store] = { sales: 0, customers: 0, waste: 0, count: 0 };
+            }
+            storeStats[r.store].sales += r.sales || 0;
+            storeStats[r.store].customers += r.customers || 0;
+            storeStats[r.store].waste += (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0);
+            storeStats[r.store].count += 1;
+        });
+        
+        const storeList = Object.entries(storeStats).map(([store, stats]) => ({
+            store,
+            avgSales: stats.sales / stats.count,
+            avgCustomers: stats.customers / stats.count,
+            avgWaste: stats.waste / stats.count
+        })).sort((a, b) => b.avgSales - a.avgSales);
+        
+        return `店舗別統計:\n${storeList.map(s => `${s.store}: 平均売上 ¥${Math.round(s.avgSales).toLocaleString()}, 平均客数 ${Math.round(s.avgCustomers)}人, 平均廃棄 ¥${Math.round(s.avgWaste).toLocaleString()}`).join('\n')}`;
+    }
+
+    // 天気に関する質問
+    if (questionLower.includes('天気') || questionLower.includes('気温') || questionLower.includes('雨')) {
+        const weatherReports = validReports.filter(r => r.weather);
+        if (weatherReports.length === 0) {
+            return "天気データがありません。";
+        }
+        const avgTemp = weatherReports.reduce((sum, r) => sum + (r.weather.maxTemp || 0), 0) / weatherReports.length;
+        const maxTemp = Math.max(...weatherReports.map(r => r.weather.maxTemp || 0));
+        const minTemp = Math.min(...weatherReports.map(r => r.weather.maxTemp || 0));
+        
+        return `天気統計:\n平均気温: ${Math.round(avgTemp)}°C\n最高気温: ${maxTemp}°C\n最低気温: ${minTemp}°C`;
+    }
+
+    // デフォルト: 基本統計を返す
+    return `選択期間の基本統計:\n\n📊 売上\n平均: ¥${Math.round(avgSales).toLocaleString()}\n合計: ¥${Math.round(totalSales).toLocaleString()}\n\n👥 客数\n平均: ${Math.round(avgCustomers)}人\n合計: ${Math.round(totalCustomers)}人\n\n💰 客単価\n平均: ¥${Math.round(avgCustomerSpend).toLocaleString()}\n\n🗑️ 廃棄・値下げ\n合計: ¥${Math.round(totalWaste).toLocaleString()}\n平均: ¥${Math.round(avgWaste).toLocaleString()}\n\nデータ件数: ${validReports.length}件\n\nより詳しい情報を知りたい場合は、「売上が高い日は？」「廃棄が多い店舗は？」など具体的に質問してください。`;
+};
+
+const AiAnalysisPage = ({ stores, dateRange, onRefresh, aiSettings }) => {
+    const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
+    const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
+    const isLoading = isLoadingReports || isLoadingReportsLY;
+    const [userInput, setUserInput] = useState('');
+    const [messages, setMessages] = useState([]);
+    const [isAiLoading, setIsAiLoading] = useState(false);
+    const [notice, setNotice] = useState('');
+    const speech = useSpeechInput(setUserInput);
+
+    const dataSummary = useMemo(
+        () => buildAiDataSummary({ reports, reportsLY, stores, dateRange, events: aiSettings.events }),
+        [reports, reportsLY, stores, dateRange.startDate, dateRange.endDate, dateRange.startDateLY, dateRange.endDateLY, aiSettings.events]
+    );
+
+    const handleSendMessage = async (question) => {
+        const text = (question || '').trim();
+        if (!text || isAiLoading || isLoading) return;
+
+        const newMessages = [...messages, { role: 'user', text }];
         setMessages(newMessages);
         setUserInput('');
         setIsAiLoading(true);
 
-        // データサマリーを作成
-        const dataSummary = reports.map(r => {
-            const reportDate = r.date ? getLocalDateString(r.date.toDate()) : '日付不明';
-            const wasteTotal = (r.waste_product || 0) + (r.waste_owner_8 || 0) + (r.waste_owner_10 || 0) + (r.waste_promo_8 || 0) + (r.waste_promo_10 || 0);
-            const customerSpend = (r.sales && r.customers) ? Math.round(r.sales / r.customers) : 0;
-            return `日付: ${reportDate}, 店舗: ${r.store}, 売上: ${r.sales || 0}円, 客数: ${r.customers || 0}人, 客単価: ${customerSpend}円, 商品廃棄: ${r.waste_product || 0}円, オーナー値下げ8%: ${r.waste_owner_8 || 0}円, オーナー値下げ10%: ${r.waste_owner_10 || 0}円, 販促値下げ8%: ${r.waste_promo_8 || 0}円, 販促値下げ10%: ${r.waste_promo_10 || 0}円, 廃棄合計: ${wasteTotal}円, 天気: ${r.weather ? `${r.weather.maxTemp}°C, 降水量: ${r.weather.precipitation}mm` : '情報なし'}`;
-        }).join('\n');
-
-        // APIキーを環境変数から取得
-        const apiKey = import.meta.env.VITE_GEMINI_API_KEY || '';
-        
-        // デバッグ用（開発時のみ）
-        if (import.meta.env.DEV) {
-            console.log('API Key loaded:', apiKey ? 'Yes' : 'No');
-        }
-
-        if (apiKey) {
-            // Gemini APIを使用
+        if (!GEMINI_API_KEY) {
+            // APIキーがない場合はローカルの簡易分析を使用
             try {
-                const prompt = `あなたは優秀なコンビニ経営コンサルタントです。以下のデータを基に、ユーザーの質問に対して具体的で実行可能なアドバイスを日本語で回答してください。データの数値を正確に引用し、分析結果を分かりやすく説明してください。\n\nデータ:\n${dataSummary}\n\nユーザーの質問:\n${userInput}`;
-                
-                // まず利用可能なモデルを確認
-                let availableModels = [];
-                try {
-                    const listUrl = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
-                    const listResponse = await fetch(listUrl);
-                    if (listResponse.ok) {
-                        const listResult = await listResponse.json();
-                        if (listResult.models && Array.isArray(listResult.models)) {
-                            availableModels = listResult.models
-                                .filter(m => m && m.name && Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
-                                .map(m => {
-                                    // モデル名から "models/" プレフィックスを削除
-                                    const modelName = m.name.replace(/^models\//, '');
-                                    return modelName;
-                                })
-                                .filter(name => name); // 空文字列を除外
-                            if (availableModels.length > 0) {
-                                console.log('利用可能なモデル:', availableModels);
-                            }
-                        }
-                    } else {
-                        const errorResult = await listResponse.json().catch(() => ({}));
-                        console.warn('モデルリストの取得に失敗:', listResponse.status, errorResult);
-                    }
-                } catch (listErr) {
-                    console.warn('モデルリストの取得に失敗:', listErr.message || listErr);
-                }
-                
-                // 利用可能なモデルがある場合はそれを使用、なければデフォルトのリストを使用
-                const modelsToTry = availableModels.length > 0 
-                    ? availableModels 
-                    : [
-                        'gemini-1.5-flash',
-                        'gemini-1.5-pro',
-                        'gemini-pro',
-                        'models/gemini-1.5-flash',
-                        'models/gemini-1.5-pro',
-                        'models/gemini-pro'
-                    ];
-                
-                let lastError = null;
-                let aiResponse = null;
-                const apiVersions = ['v1', 'v1beta'];
-                
-                // 各APIバージョンとモデルの組み合わせを試す
-                for (const version of apiVersions) {
-                    for (const model of modelsToTry) {
-                        try {
-                            // モデル名に "models/" が含まれている場合はそのまま、なければ追加
-                            const modelName = model.startsWith('models/') ? model : `models/${model}`;
-                            const apiUrl = `https://generativelanguage.googleapis.com/${version}/${modelName}:generateContent?key=${apiKey}`;
-                            
-                            const payload = { 
-                                contents: [{ parts: [{ text: prompt }] }],
-                                generationConfig: {
-                                    temperature: 0.7,
-                                    topK: 40,
-                                    topP: 0.95,
-                                    maxOutputTokens: 2048,
-                                }
-                            };
-                            
-                            const response = await fetch(apiUrl, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify(payload)
-                            });
-                            
-                            // レスポンスが空でないことを確認
-                            let result;
-                            try {
-                                const responseText = await response.text();
-                                if (!responseText) {
-                                    throw new Error('Empty response');
-                                }
-                                result = JSON.parse(responseText);
-                            } catch (parseError) {
-                                console.log(`${version}/${modelName} response parse error:`, parseError.message);
-                                lastError = `レスポンスの解析に失敗: ${parseError.message}`;
-                                continue;
-                            }
-                            
-                            if (!response.ok || result.error) {
-                                const errorMsg = result.error?.message || result.error?.code || `HTTP ${response.status}`;
-                                console.log(`${version}/${modelName} failed:`, errorMsg);
-                                lastError = errorMsg;
-                                continue;
-                            }
-                            
-                            // レスポンス構造を安全に確認
-                            if (result.candidates && 
-                                Array.isArray(result.candidates) && 
-                                result.candidates.length > 0 &&
-                                result.candidates[0]?.content?.parts &&
-                                Array.isArray(result.candidates[0].content.parts) &&
-                                result.candidates[0].content.parts.length > 0 &&
-                                result.candidates[0].content.parts[0]?.text) {
-                                aiResponse = result.candidates[0].content.parts[0].text;
-                                console.log(`✅ Successfully used: ${version}/${modelName}`);
-                                break; // 成功したらループを抜ける
-                            } else {
-                                console.log(`${version}/${modelName} unexpected response structure:`, result);
-                                lastError = '予期しないレスポンス形式';
-                                continue;
-                            }
-                        } catch (err) {
-                            console.log(`${version}/${model} error:`, err.message);
-                            lastError = err.message;
-                            continue;
-                        }
-                    }
-                    if (aiResponse) break; // 成功したら外側のループも抜ける
-                }
-                
-                if (!aiResponse) {
-                    // 詳細なエラーメッセージを作成
-                    const errorDetails = `API呼び出しに失敗しました。\n\n考えられる原因:\n1. APIキーが無効または権限が不足しています\n2. Google CloudプロジェクトでGemini APIが有効化されていません\n3. 請求（Billing）設定が完了していません\n4. APIキーに適切なIAMロールが付与されていません\n\nエラー詳細: ${lastError || '不明なエラー'}\n\n対処方法:\n1. Google Cloud Console (https://console.cloud.google.com/) にアクセス\n2. APIとサービス > 有効なAPI で「Generative Language API」が有効か確認\n3. 請求アカウントがプロジェクトに紐づいているか確認\n4. APIキーの制限設定を確認（IPアドレスやHTTPリファラー制限など）`;
-                    throw new Error(errorDetails);
-                }
-                
-                // 成功した場合はレスポンスを設定
-                setMessages([...newMessages, { role: 'ai', text: aiResponse }]);
+                const analysisResult = analyzeDataLocally(text, reports);
+                setMessages([...newMessages, { role: 'ai', text: `[簡易分析モード]\n\n${analysisResult}\n\n※AIによる分析にはGemini APIキーの設定が必要です。`, isLocal: true }]);
             } catch (error) {
-                console.error("AI分析に失敗しました:", error);
-                // APIエラーの場合はローカル分析にフォールバック
-                try {
-                    const analysisResult = analyzeDataLocally(userInput, reports);
-                    setMessages([...newMessages, { role: 'ai', text: `[APIエラーのため簡易分析]\n\nエラー詳細: ${error.message}\n\n${analysisResult}` }]);
-                } catch (fallbackError) {
-                    setMessages([...newMessages, { role: 'ai', text: `分析中にエラーが発生しました。\nエラー: ${error.message}\n\nAPIキーの設定とブラウザのコンソールを確認してください。` }]);
-                }
+                console.error("データ分析に失敗しました:", error);
+                setMessages([...newMessages, { role: 'ai', text: "分析中にエラーが発生しました。もう一度お試しください。", isError: true }]);
             } finally {
                 setIsAiLoading(false);
             }
-        } else {
-            // APIキーがない場合はローカル分析を使用
-            setTimeout(() => {
-                try {
-                    const analysisResult = analyzeDataLocally(userInput, reports);
-                    setMessages([...newMessages, { role: 'ai', text: `[簡易分析モード]\n\n${analysisResult}\n\n※より詳細な分析にはGemini APIキーの設定が必要です。` }]);
-                } catch (error) {
-                    console.error("データ分析に失敗しました:", error);
-                    setMessages([...newMessages, { role: 'ai', text: "分析中にエラーが発生しました。もう一度お試しください。" }]);
-                } finally {
-                    setIsAiLoading(false);
-                }
-            }, 500);
+            return;
+        }
+
+        try {
+            const contents = newMessages
+                .filter(m => !m.isError && !m.isLocal)
+                .map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
+            const result = await callGemini({
+                systemText: buildAiSystemText({ role: AI_ANALYSIS_ROLE, policy: aiSettings.policy, dataText: dataSummary }),
+                contents,
+                model: aiSettings.model,
+            });
+            setMessages([...newMessages, { role: 'ai', text: result.text, model: result.model }]);
+        } catch (error) {
+            console.error("AI分析に失敗しました:", error);
+            setMessages([...newMessages, { role: 'ai', text: `AIの呼び出しに失敗しました。\n${error.message}`, isError: true }]);
+        } finally {
+            setIsAiLoading(false);
+        }
+    };
+
+    const handleAddPolicyNote = async () => {
+        try {
+            if (await appendAiPolicyNote(aiSettings.policy)) {
+                setNotice('方針メモに追記しました。次の質問から反映されます。');
+                setTimeout(() => setNotice(''), 4000);
+            }
+        } catch (error) {
+            setNotice(`方針メモの保存に失敗しました: ${error.message}`);
         }
     };
 
     return (
         <div className="flex flex-col h-full">
-            <h1 className="text-3xl font-bold text-gray-800 mb-6">AI経営分析</h1>
-            <div className="flex-grow bg-white rounded-lg shadow p-6 overflow-y-auto mb-4">
-                {messages.length === 0 && (
-                    <div className="text-center text-gray-500">
-                        <SparklesIcon className="mx-auto h-12 w-12 text-gray-400" />
-                        <p className="mt-2">選択された期間のデータについて、AIに質問してみましょう。</p>
-                        <p className="text-sm mt-1">例: 「売上が高い日と低い日の特徴は？」</p>
-                    </div>
-                )}
-                {messages.map((msg, index) => (
-                    <div key={index} className={`mb-4 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
-                        <div className={`inline-block p-3 rounded-lg ${msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'}`}>
-                           <p style={{whiteSpace: 'pre-wrap'}}>{msg.text}</p>
-                        </div>
-                    </div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">AI経営分析</h1>
+            <p className="text-sm text-gray-600 mb-3">
+                対象期間: {getLocalDateString(dateRange.startDate)} 〜 {getLocalDateString(dateRange.endDate)}（前年同期と比較）
+                <span className="ml-3">方針メモ: {(aiSettings.policy || '').trim() ? '登録あり' : '未登録'}</span>
+                {!GEMINI_API_KEY && <span className="ml-3 text-yellow-700">APIキー未設定のため簡易分析モード</span>}
+            </p>
+            <div className="flex flex-wrap gap-2 mb-3">
+                {AI_QUICK_QUESTIONS.map(q => (
+                    <button key={q.label} type="button" onClick={() => handleSendMessage(q.text)} disabled={isAiLoading || isLoading} className="px-3 py-1.5 text-sm rounded-full border bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:text-blue-700 disabled:opacity-50">{q.label}</button>
                 ))}
-                {isAiLoading && (
-                      <div className="text-left">
-                        <div className="inline-block p-3 rounded-lg bg-gray-200 text-gray-800">
-                           <div className="flex items-center">
-                               <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse mr-2"></div>
-                               <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse mr-2 delay-75"></div>
-                               <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse delay-150"></div>
-                           </div>
-                        </div>
+            </div>
+            {notice && <p className="mb-3 text-sm p-2 rounded bg-green-100 text-green-700">{notice}</p>}
+            <AiChatMessages
+                messages={messages}
+                isAiLoading={isAiLoading}
+                onAddPolicyNote={GEMINI_API_KEY ? handleAddPolicyNote : null}
+                emptyState={(
+                    <div className="text-center text-gray-500">
+                        <p className="mt-2">{isLoading ? 'データを読み込んでいます...' : '選択された期間のデータについて、AIに質問してみましょう。'}</p>
+                        <p className="text-sm mt-1">上のボタンか、自由な文章で質問できます。例: 「北谷店の廃棄が多い曜日は？」</p>
                     </div>
                 )}
-            </div>
-            <div className="flex">
-                <input
-                    type="text"
-                    value={userInput}
-                    onChange={(e) => setUserInput(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && !isAiLoading && handleSendMessage()}
-                    className="flex-grow p-3 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="AIへの質問を入力..."
-                    disabled={isAiLoading || isLoading}
-                />
-                 <button
-                    onClick={handleMicClick}
-                    className={`p-3 border-t border-b ${isListening ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600'}`}
-                >
-                    <MicIcon />
-                </button>
-                <button
-                    onClick={handleSendMessage}
-                    disabled={isAiLoading || isLoading}
-                    className="bg-blue-600 text-white font-bold py-3 px-6 rounded-r-lg hover:bg-blue-700 disabled:bg-gray-400"
-                >
-                    {isAiLoading ? '分析中...' : '送信'}
-                </button>
-            </div>
+            />
+            <details className="mb-3 text-xs text-gray-500">
+                <summary className="cursor-pointer select-none">AIに渡している集計データを表示</summary>
+                <pre className="mt-2 p-3 bg-gray-100 rounded max-h-64 overflow-auto whitespace-pre-wrap">{dataSummary}</pre>
+            </details>
+            <AiChatInput userInput={userInput} setUserInput={setUserInput} onSend={handleSendMessage} disabled={isAiLoading || isLoading} isAiLoading={isAiLoading} speech={speech} />
         </div>
     );
 };
@@ -3725,110 +4038,137 @@ const HourlySyncPage = ({ stores }) => {
     );
 };
 
-const AiForecastPage = () => {
+const AI_FORECAST_ROLE = `あなたは、コンビニエンスストア3店舗を運営する会社の売上予測担当です。アプリが実データから計算した集計データと天気予報をもとに、今後7日間の店舗別・日別の日販と客数の目安を答えます。
+予測の作り方:
+・基準は「直近4週の同曜日平均」とする。
+・天気予報、前年同曜日の動き、出来事の記録を見て補正する場合は、補正の理由と幅を書く。補正は原則±10%以内とする。
+・予測値は「10/6(火) 日販65.0万円 客数770人」のように、店舗ごとに1日1行で書く。
+・発注については、商品別のデータが無いため数量は出さず、多め・少なめの方向性だけを述べる。
+・最後に、予測は目安であることを一言添える。`;
+
+const AI_FORECAST_QUICK_QUESTIONS = [
+    { label: '今後7日間の売上予測', text: '今後7日間の売上と客数を、店舗別・日別に予測してください。' },
+    { label: '天気を踏まえた注意点', text: '今後7日間の天気予報を踏まえて、発注で気をつける日を教えてください。' },
+];
+
+// 売上予測用の集計データを作る（直近8週の実績・前年同曜日・7日間の天気予報）
+const buildAiForecastData = async (stores, events) => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const addDays = (base, days) => { const d = new Date(base); d.setDate(d.getDate() + days); return d; };
+    const forecastDays = Array.from({ length: 7 }, (_, i) => addDays(today, i));
+    const startStr = getLocalDateString(forecastDays[0]);
+    const endStr = getLocalDateString(forecastDays[6]);
+    const storeNames = stores.map(s => s.name);
+
+    const weatherByDate = {};
+    try {
+        const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=34.77&longitude=136.13&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo&start_date=${startStr}&end_date=${endStr}`;
+        const weatherData = await (await fetch(weatherUrl)).json();
+        (weatherData.daily?.time || []).forEach((t, i) => {
+            weatherByDate[t] = {
+                icon: getWeatherIcon(weatherData.daily.weathercode[i]),
+                maxTemp: weatherData.daily.temperature_2m_max[i],
+                precipitation: weatherData.daily.precipitation_sum[i],
+            };
+        });
+    } catch (error) {
+        console.error("天気予報の取得に失敗しました:", error);
+    }
+
+    const fetchRows = async (from, to, isLy) => {
+        const q = query(collection(db, dailyReportsPath), where("date", ">=", Timestamp.fromDate(from)), where("date", "<=", Timestamp.fromDate(to)));
+        const snapshot = await getDocs(q);
+        return snapshot.docs.map(d => toAiRow({ id: d.id, ...d.data() }, isLy)).filter(r => r && storeNames.includes(r.store));
+    };
+    const todayLy = getSameCalendarDateLastYear(today);
+    const [recentRows, lyRows] = await Promise.all([
+        fetchRows(addDays(today, -56), addDays(today, -1), false),
+        fetchRows(addDays(todayLy, -35), addDays(todayLy, 13), true),
+    ]);
+
+    const last28Str = getLocalDateString(addDays(today, -28));
+    const ly28StartStr = getLocalDateString(addDays(todayLy, -28));
+    const lyTodayStr = getLocalDateString(todayLy);
+    const dayLabel = (d) => `${getLocalDateString(d)}(${getWeekdayLabel(d)})`;
+
+    const lines = [];
+    lines.push(`【予測対象】${startStr}〜${endStr}（今日を含む7日間）`);
+    lines.push('【単位】金額は円、1日あたり。');
+    lines.push('', '【天気予報（伊賀市）】');
+    forecastDays.forEach(d => {
+        const w = weatherByDate[getLocalDateString(d)];
+        lines.push(`  ${dayLabel(d)}: ${w ? `${w.icon} 最高${w.maxTemp}℃ 降水${w.precipitation}mm` : '予報なし'}`);
+    });
+
+    lines.push('', '【店舗別データ】');
+    storeNames.forEach(name => {
+        const rows = recentRows.filter(r => r.store === name);
+        const last28 = rows.filter(r => r.date >= last28Str);
+        const ly28 = lyRows.filter(r => r.store === name && r.date >= ly28StartStr && r.date < lyTodayStr);
+        const cyAgg = aggregateAiRows(last28);
+        const lyAgg = aggregateAiRows(ly28);
+        lines.push(`■${name}`);
+        lines.push(`  直近4週: ${cyAgg ? `売上入力${cyAgg.n}日 日販${aiYen(cyAgg.salesAvg)} 客数${aiYen(cyAgg.customersAvg)}` : 'データなし'}｜前年同時期: ${lyAgg ? `日販${aiYen(lyAgg.salesAvg)} 客数${aiYen(lyAgg.customersAvg)}` : 'データなし'}｜前年比: 日販${aiDiffPct(cyAgg?.salesAvg, lyAgg?.salesAvg)} 客数${aiDiffPct(cyAgg?.customersAvg, lyAgg?.customersAvg)}`);
+        const rainy = aggregateAiRows(rows.filter(r => r.weather && (r.weather.precipitation || 0) >= AI_RAIN_MM));
+        const dry = aggregateAiRows(rows.filter(r => r.weather && (r.weather.precipitation || 0) < AI_RAIN_MM));
+        lines.push(`  直近8週の天気別: 雨の日(降水${AI_RAIN_MM}mm以上) ${rainy ? `${rainy.n}日 日販${aiYen(rainy.salesAvg)}` : 'なし'}／それ以外 ${dry ? `${dry.n}日 日販${aiYen(dry.salesAvg)}` : 'なし'}`);
+        forecastDays.forEach(d => {
+            const dow4 = aggregateAiRows(last28.filter(r => r.dow === d.getDay()));
+            const dow8 = aggregateAiRows(rows.filter(r => r.dow === d.getDay()));
+            const lyDowStr = getLocalDateString(getSameWeekdayNearLastYearDate(d));
+            const lyRow = lyRows.find(r => r.store === name && r.date === lyDowStr);
+            const lyText = lyRow
+                ? `日販${aiYen(lyRow.sales)} 客数${aiYen(lyRow.customers)}${lyRow.weather ? ` 最高${lyRow.weather.maxTemp}℃ 降水${lyRow.weather.precipitation}mm` : ''}`
+                : 'データなし';
+            lines.push(`  ${dayLabel(d)}: 直近4週の同曜日平均 ${dow4 ? `日販${aiYen(dow4.salesAvg)} 客数${aiYen(dow4.customersAvg)}（${dow4.n}日）` : 'データなし'}／直近8週の同曜日平均 ${dow8 ? `日販${aiYen(dow8.salesAvg)}（${dow8.n}日）` : 'データなし'}／前年同曜日(${lyDowStr}) ${lyText}`);
+        });
+    });
+
+    const recentStartStr = getLocalDateString(addDays(today, -56));
+    const lyFromStr = getLocalDateString(addDays(todayLy, -7));
+    const lyToStr = getLocalDateString(addDays(todayLy, 13));
+    const relatedEvents = (events || [])
+        .filter(e => e?.note && (!e.date || (e.date >= recentStartStr && e.date <= endStr) || (e.date >= lyFromStr && e.date <= lyToStr)))
+        .sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    lines.push('', '【出来事の記録（直近8週〜予測期間と、前年の同時期に該当するもの）】');
+    if (relatedEvents.length === 0) lines.push('登録なし');
+    relatedEvents.forEach(e => lines.push(`  ${describeAiEvent(e)}`));
+
+    return lines.join('\n');
+};
+
+const AiForecastPage = ({ stores, aiSettings }) => {
     const [messages, setMessages] = useState([]);
     const [userInput, setUserInput] = useState('');
     const [isAiLoading, setIsAiLoading] = useState(false);
-    const [error, setError] = useState(null);
-    const [isListening, setIsListening] = useState(false);
-    const recognitionRef = useRef(null);
+    const [forecastData, setForecastData] = useState('');
+    const speech = useSpeechInput(setUserInput);
 
-    useEffect(() => {
-        if (!('webkitSpeechRecognition' in window)) {
-            console.error("音声認識はサポートされていません");
-            return;
-        }
-        const recognition = new window.webkitSpeechRecognition();
-        recognition.continuous = false;
-        recognition.lang = 'ja-JP';
-        recognition.interimResults = false;
+    const handleSendMessage = async (question) => {
+        const text = (question || '').trim();
+        if (!text || isAiLoading) return;
 
-        recognition.onstart = () => setIsListening(true);
-        recognition.onresult = (event) => setUserInput(event.results[0][0].transcript);
-        recognition.onerror = (event) => {
-            console.error('音声認識エラー', event.error);
-            setIsListening(false);
-        };
-        recognition.onend = () => setIsListening(false);
-        
-        recognitionRef.current = recognition;
-    }, []);
-
-    const handleMicClick = () => {
-        if (isListening) {
-            recognitionRef.current.stop();
-        } else {
-            recognitionRef.current.start();
-        }
-    };
-
-    const handleSendMessage = async () => {
-        if (!userInput.trim()) return;
-
-        const newMessages = [...messages, { role: 'user', text: userInput }];
+        const newMessages = [...messages, { role: 'user', text }];
         setMessages(newMessages);
         setUserInput('');
         setIsAiLoading(true);
-        setError(null);
 
         try {
-            const today = new Date();
-            const endDate = new Date();
-            endDate.setDate(today.getDate() + 6);
-            const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=34.77&longitude=136.13&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo&start_date=${getLocalDateString(today)}&end_date=${getLocalDateString(endDate)}`;
-            const weatherResponse = await fetch(weatherUrl);
-            const weatherData = await weatherResponse.json();
-            
-            const forecastWeather = weatherData.daily.time.map((t, i) => ({
-                date: t,
-                weather: getWeatherIcon(weatherData.daily.weathercode[i]),
-                temp: weatherData.daily.temperature_2m_max[i]
-            }));
-
-            const lastYearStartDate = new Date(today.getFullYear() - 1, today.getMonth(), today.getDate());
-            const lastYearEndDate = new Date(endDate.getFullYear() - 1, endDate.getMonth(), endDate.getDate());
-            
-            const reportsRef = collection(db, dailyReportsPath);
-            const q = query(reportsRef, where("date", ">=", Timestamp.fromDate(lastYearStartDate)), where("date", "<=", Timestamp.fromDate(lastYearEndDate)));
-            const querySnapshot = await getDocs(q);
-            const historicalData = querySnapshot.docs.map(doc => {
-                const data = doc.data();
-                return `日付: ${getLocalDateString(data.date.toDate())}, 売上: ${data.sales}円, 客数: ${data.customers}人, 天気: ${data.weather ? `${getWeatherIcon(data.weather.weatherCode)} ${data.weather.maxTemp}°C` : '情報なし'}`;
-            }).join('\n');
-            
-            const prompt = `あなたは優秀なコンビニ経営コンサルタントです。以下の過去のデータと未来の天気予報を基に、ユーザーの質問「${userInput}」に答えてください。特に売上予測や発注に関する質問の場合は、具体的な数値や商品名を挙げて、表形式も活用しながら分かりやすくアドバイスしてください。
-
-過去データ（昨年同週）:
-${historicalData || 'なし'}
-
-来週の天気予報:
-${forecastWeather.map(f => `日付: ${f.date}, 天気: ${f.weather}, 最高気温: ${f.temp}°C`).join('\n')}
-
-ユーザーの質問:
-${userInput}
-`;
-
-            const apiKey = ""; 
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
-            const payload = { contents: [{ parts: [{ text: prompt }] }] };
-            
-            const response = await fetch(apiUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+            const dataText = await buildAiForecastData(stores, aiSettings.events);
+            setForecastData(dataText);
+            const contents = newMessages
+                .filter(m => !m.isError)
+                .map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
+            const result = await callGemini({
+                systemText: buildAiSystemText({ role: AI_FORECAST_ROLE, policy: aiSettings.policy, dataText }),
+                contents,
+                model: aiSettings.model,
             });
-            const result = await response.json();
-            
-            let aiResponse = "申し訳ありません、分析結果を取得できませんでした。";
-            if (result.candidates && result.candidates[0]?.content?.parts?.[0]?.text) {
-                aiResponse = result.candidates[0].content.parts[0].text;
-            }
-            setMessages([...newMessages, { role: 'ai', text: aiResponse }]);
-
-        } catch (e) {
-            console.error(e);
-            setError("予測の生成中にエラーが発生しました。");
-             setMessages([...newMessages, { role: 'ai', text: "予測の生成中にエラーが発生しました。" }]);
+            setMessages([...newMessages, { role: 'ai', text: result.text, model: result.model }]);
+        } catch (error) {
+            console.error("AI売上予測に失敗しました:", error);
+            setMessages([...newMessages, { role: 'ai', text: `予測の生成に失敗しました。\n${error.message}`, isError: true }]);
         } finally {
             setIsAiLoading(false);
         }
@@ -3837,58 +4177,226 @@ ${userInput}
     return (
         <div className="flex flex-col h-full">
             <h1 className="text-3xl font-bold text-gray-800 mb-2">AI売上予測</h1>
-            <p className="text-gray-600 mb-6">過去のデータと未来の天気予報を基に、AIが来週の売上予測と発注アドバイスを生成します。</p>
-            <div className="flex-grow bg-white rounded-lg shadow p-6 overflow-y-auto mb-4">
-                {messages.length === 0 && (
-                    <div className="text-center text-gray-500">
-                        <BrainIcon className="mx-auto h-12 w-12 text-gray-400" />
-                        <p className="mt-2">AIに売上予測や発注に関する質問をしてみましょう。</p>
-                        <p className="text-sm mt-1">例: 「来週の売上を予測して」</p>
-                    </div>
-                )}
-                {messages.map((msg, index) => (
-                    <div key={index} className={`mb-4 ${msg.role === 'user' ? 'text-right' : 'text-left'}`}>
-                        <div className={`inline-block p-3 rounded-lg ${msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'}`}>
-                           <p style={{whiteSpace: 'pre-wrap'}}>{msg.text}</p>
-                        </div>
-                    </div>
+            <p className="text-sm text-gray-600 mb-3">
+                直近8週の実績・前年同曜日・7日間の天気予報をもとに、今後7日間の売上の目安を出します。
+                {!GEMINI_API_KEY && <span className="ml-3 text-yellow-700">APIキー未設定のため利用できません</span>}
+            </p>
+            <div className="flex flex-wrap gap-2 mb-3">
+                {AI_FORECAST_QUICK_QUESTIONS.map(q => (
+                    <button key={q.label} type="button" onClick={() => handleSendMessage(q.text)} disabled={isAiLoading || !GEMINI_API_KEY} className="px-3 py-1.5 text-sm rounded-full border bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:text-blue-700 disabled:opacity-50">{q.label}</button>
                 ))}
-                {isAiLoading && (
-                      <div className="text-left">
-                        <div className="inline-block p-3 rounded-lg bg-gray-200 text-gray-800">
-                           <div className="flex items-center">
-                               <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse mr-2"></div>
-                               <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse mr-2 delay-75"></div>
-                               <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse delay-150"></div>
-                           </div>
-                        </div>
+            </div>
+            <AiChatMessages
+                messages={messages}
+                isAiLoading={isAiLoading}
+                emptyState={(
+                    <div className="text-center text-gray-500">
+                        <p className="mt-2">AIに売上予測や発注に関する質問をしてみましょう。</p>
+                        <p className="text-sm mt-1">例: 「今週末の売上はどのくらいになりそう？」</p>
                     </div>
                 )}
-                 {error && <p className="mt-4 text-center p-3 rounded-lg bg-red-100 text-red-700">{error}</p>}
-            </div>
-            <div className="flex">
-                <input
-                    type="text"
-                    value={userInput}
-                    onChange={(e) => setUserInput(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && !isAiLoading && handleSendMessage()}
-                    className="flex-grow p-3 border rounded-l-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="AIへの質問を入力..."
-                    disabled={isAiLoading}
+            />
+            {forecastData && (
+                <details className="mb-3 text-xs text-gray-500">
+                    <summary className="cursor-pointer select-none">AIに渡している集計データを表示</summary>
+                    <pre className="mt-2 p-3 bg-gray-100 rounded max-h-64 overflow-auto whitespace-pre-wrap">{forecastData}</pre>
+                </details>
+            )}
+            <AiChatInput userInput={userInput} setUserInput={setUserInput} onSend={handleSendMessage} disabled={isAiLoading || !GEMINI_API_KEY} isAiLoading={isAiLoading} speech={speech} />
+        </div>
+    );
+};
+
+const AI_POLICY_GUIDE_LENGTH = 3000;   // 方針メモの長さの目安（文字数）
+
+const AiSettingsPage = ({ stores, aiSettings }) => {
+    const [policy, setPolicy] = useState(aiSettings.policy || '');
+    const [isDirty, setIsDirty] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
+    const [message, setMessage] = useState(null);
+    const [newEvent, setNewEvent] = useState({ date: '', store: '', note: '' });
+    const [models, setModels] = useState([]);
+    const [isTesting, setIsTesting] = useState(false);
+    const [testResult, setTestResult] = useState(null);
+
+    // 他の端末で保存された内容は、編集中でなければ取り込む
+    useEffect(() => {
+        if (!isDirty) setPolicy(aiSettings.policy || '');
+    }, [aiSettings.policy, isDirty]);
+
+    useEffect(() => {
+        if (!GEMINI_API_KEY) return;
+        fetchGeminiModels().then(setModels).catch(error => console.warn('モデル一覧の取得に失敗:', error.message || error));
+    }, []);
+
+    const showMessage = (type, text) => {
+        setMessage({ type, text });
+        setTimeout(() => setMessage(null), 4000);
+    };
+
+    const events = useMemo(
+        () => [...(aiSettings.events || [])].sort((a, b) => (b.date || '').localeCompare(a.date || '')),
+        [aiSettings.events]
+    );
+
+    const handleSavePolicy = async () => {
+        setIsSaving(true);
+        try {
+            await saveAiSettings({ policy });
+            setIsDirty(false);
+            showMessage('success', '経営方針メモを保存しました。次の質問から反映されます。');
+        } catch (error) {
+            showMessage('error', `保存エラー: ${error.message}`);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const handleAddEvent = async () => {
+        if (!newEvent.note.trim()) {
+            showMessage('error', '出来事の内容を入力してください。');
+            return;
+        }
+        try {
+            const event = { id: String(Date.now()), date: newEvent.date, store: newEvent.store, note: newEvent.note.trim() };
+            await saveAiSettings({ events: [...(aiSettings.events || []), event] });
+            setNewEvent({ date: '', store: '', note: '' });
+            showMessage('success', '出来事を追加しました。');
+        } catch (error) {
+            showMessage('error', `保存エラー: ${error.message}`);
+        }
+    };
+
+    const handleDeleteEvent = async (event) => {
+        if (!window.confirm(`次の記録を削除します。よろしいですか？\n\n${describeAiEvent(event)}`)) return;
+        try {
+            await saveAiSettings({ events: (aiSettings.events || []).filter(e => e.id !== event.id) });
+        } catch (error) {
+            showMessage('error', `削除エラー: ${error.message}`);
+        }
+    };
+
+    const handleModelChange = async (model) => {
+        try {
+            await saveAiSettings({ model });
+            setTestResult(null);
+        } catch (error) {
+            showMessage('error', `保存エラー: ${error.message}`);
+        }
+    };
+
+    const handleTest = async () => {
+        setIsTesting(true);
+        setTestResult(null);
+        try {
+            const result = await callGemini({
+                systemText: '接続テストです。',
+                contents: [{ role: 'user', parts: [{ text: '「接続できました」とだけ返事してください。' }] }],
+                model: aiSettings.model,
+            });
+            setTestResult({ type: 'success', text: `接続できました（使用モデル: ${result.model}）` });
+        } catch (error) {
+            setTestResult({ type: 'error', text: `接続できませんでした: ${error.message}` });
+        } finally {
+            setIsTesting(false);
+        }
+    };
+
+    const modelOptions = aiSettings.model && !models.includes(aiSettings.model) ? [aiSettings.model, ...models] : models;
+
+    return (
+        <div>
+            <h1 className="text-3xl font-bold text-gray-800 mb-2">AI設定</h1>
+            <p className="text-gray-600 mb-6">ここに書いた内容は、AI分析とAI売上予測の質問のたびにAIへ渡されます。保存するとすべての端末に反映されます。</p>
+            {message && <p className={`mb-4 text-center p-3 rounded-lg ${message.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{message.text}</p>}
+
+            <div className="bg-white p-6 rounded-lg shadow mb-6">
+                <h2 className="text-xl font-semibold mb-2">経営方針メモ</h2>
+                <p className="text-sm text-gray-600 mb-3">経営の考え方、目標や基準、店舗ごとの事情、答え方の好みなどを自由に書いてください。AIはこの内容を最優先して答えます。</p>
+                <textarea
+                    value={policy}
+                    onChange={(e) => { setPolicy(e.target.value); setIsDirty(true); }}
+                    rows={12}
+                    className="block w-full p-3 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
+                    placeholder={'例:\n・廃棄・値下げの合計は売上の2.5%以内を目標にしている。\n・廃棄を減らすために欠品させるのは本末転倒。機会損失を重く見る。\n・駅南店は駅前で昼の来店が中心。催事の日は別扱いで考える。\n・回答は結論を先に、数字は千円単位で、提案は3つまで。'}
                 />
-                 <button
-                    onClick={handleMicClick}
-                    className={`p-3 border-t border-b ${isListening ? 'bg-red-500 text-white' : 'bg-gray-100 text-gray-600'}`}
-                >
-                    <MicIcon />
-                </button>
-                <button
-                    onClick={handleSendMessage}
-                    disabled={isAiLoading}
-                    className="bg-blue-600 text-white font-bold py-3 px-6 rounded-r-lg hover:bg-blue-700 disabled:bg-gray-400"
-                >
-                    {isAiLoading ? '分析中...' : '送信'}
-                </button>
+                <div className="mt-3 flex flex-wrap items-center gap-4">
+                    <button type="button" onClick={handleSavePolicy} disabled={isSaving || !isDirty} className="bg-blue-600 text-white font-bold py-2 px-6 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-400">{isSaving ? '保存中...' : '方針メモを保存'}</button>
+                    <span className={`text-sm ${policy.length > AI_POLICY_GUIDE_LENGTH ? 'text-yellow-700' : 'text-gray-500'}`}>
+                        {policy.length.toLocaleString()}文字（目安 {AI_POLICY_GUIDE_LENGTH.toLocaleString()}文字まで。長すぎると効きが悪くなります）
+                    </span>
+                    {isDirty && <span className="text-sm text-yellow-700">未保存の変更があります</span>}
+                </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-lg shadow mb-6">
+                <h2 className="text-xl font-semibold mb-2">出来事の記録</h2>
+                <p className="text-sm text-gray-600 mb-3">催事、改装、休業、近隣の工事など、数字に影響した出来事を記録します。分析期間に当てはまるものがAIに渡され、異常値ではなく既知の出来事として扱われます。</p>
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end p-4 border rounded-lg bg-gray-50">
+                    <div className="md:col-span-3">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">日付</label>
+                        <input type="date" value={newEvent.date} onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })} className="block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                    </div>
+                    <div className="md:col-span-3">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">店舗</label>
+                        <select value={newEvent.store} onChange={(e) => setNewEvent({ ...newEvent, store: e.target.value })} className="block w-full p-2 border border-gray-300 rounded-md shadow-sm">
+                            <option value="">全店</option>
+                            {stores.map(s => <option key={s.id} value={s.name}>{s.name}</option>)}
+                        </select>
+                    </div>
+                    <div className="md:col-span-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">内容</label>
+                        <input type="text" value={newEvent.note} onChange={(e) => setNewEvent({ ...newEvent, note: e.target.value })} placeholder="例: 改装のため在庫処分" className="block w-full p-2 border border-gray-300 rounded-md shadow-sm" />
+                    </div>
+                    <div className="md:col-span-2">
+                        <button type="button" onClick={handleAddEvent} className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700">追加</button>
+                    </div>
+                </div>
+                <p className="mt-2 text-xs text-gray-500">日付を空にすると、期間に関係なく毎回AIに渡されます。数日続く出来事は、初日の日付で「〜◯日まで」と内容に書いてください。</p>
+                {events.length === 0 ? (
+                    <p className="mt-4 text-sm text-gray-500">まだ記録がありません。</p>
+                ) : (
+                    <div className="mt-4 overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                            <thead>
+                                <tr className="bg-gray-100 text-gray-700">
+                                    <th className="px-3 py-2 text-left whitespace-nowrap">日付</th>
+                                    <th className="px-3 py-2 text-left whitespace-nowrap">店舗</th>
+                                    <th className="px-3 py-2 text-left">内容</th>
+                                    <th className="px-3 py-2"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {events.map(event => (
+                                    <tr key={event.id} className="border-b">
+                                        <td className="px-3 py-2 whitespace-nowrap">{event.date ? formatDateWithWeekday(event.date) : '日付なし'}</td>
+                                        <td className="px-3 py-2 whitespace-nowrap">{event.store || '全店'}</td>
+                                        <td className="px-3 py-2">{event.note}</td>
+                                        <td className="px-3 py-2 text-right"><button type="button" onClick={() => handleDeleteEvent(event)} className="text-red-600 hover:underline whitespace-nowrap">削除</button></td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
+
+            <div className="bg-white p-6 rounded-lg shadow">
+                <h2 className="text-xl font-semibold mb-2">AIとの接続</h2>
+                <p className="text-sm text-gray-600 mb-3">
+                    APIキー: {GEMINI_API_KEY ? <span className="font-semibold text-green-700">設定済み</span> : <span className="font-semibold text-yellow-700">未設定（AI分析は簡易分析モード、AI売上予測は利用不可）</span>}
+                </p>
+                <div className="flex flex-wrap items-end gap-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">使用モデル</label>
+                        <select value={aiSettings.model || ''} onChange={(e) => handleModelChange(e.target.value)} disabled={!GEMINI_API_KEY} className="block p-2 border border-gray-300 rounded-md shadow-sm disabled:bg-gray-100">
+                            <option value="">自動（推奨）</option>
+                            {modelOptions.map(name => <option key={name} value={name}>{name}</option>)}
+                        </select>
+                    </div>
+                    <button type="button" onClick={handleTest} disabled={!GEMINI_API_KEY || isTesting} className="bg-gray-700 text-white font-bold py-2 px-6 rounded-lg shadow-md hover:bg-gray-800 disabled:bg-gray-400">{isTesting ? '確認中...' : '接続テスト'}</button>
+                </div>
+                {testResult && <p className={`mt-3 text-sm p-3 rounded-lg ${testResult.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{testResult.text}</p>}
             </div>
         </div>
     );
@@ -3903,6 +4411,7 @@ function AppContent() {
   // Use real-time listeners for master data
   const { data: allStores, isLoading: isLoadingStores } = useMasterData(storesPath);
   const { data: employees, isLoading: isLoadingEmployees } = useMasterData(employeesPath);
+  const aiSettings = useAiSettings();
   
   const stores = useMemo(() => {
       if (!allStores) return [];
@@ -3941,8 +4450,9 @@ function AppContent() {
       case 'bulkInput': return <BulkInputPage stores={stores} />;
       case 'csv': return <CsvPage dateRange={{startDate, endDate}} />;
       case 'hourlySync': return <HourlySyncPage stores={stores} />;
-      case 'ai': return <AiAnalysisPage {...pageProps} />;
-      case 'ai_forecast': return <AiForecastPage />;
+      case 'ai': return <AiAnalysisPage {...pageProps} aiSettings={aiSettings} />;
+      case 'ai_forecast': return <AiForecastPage stores={stores} aiSettings={aiSettings} />;
+      case 'ai_settings': return <AiSettingsPage stores={stores} aiSettings={aiSettings} />;
       default: return <div>ページが見つかりません</div>;
     }
   };
@@ -3975,6 +4485,7 @@ function AppContent() {
                 <NavItem icon={<SlidersIcon />} label="カスタム分析" isActive={currentPage === 'custom'} onClick={() => setCurrentPage('custom')} />
                 <NavItem icon={<SparklesIcon />} label="AI分析" isActive={currentPage === 'ai'} onClick={() => setCurrentPage('ai')} />
                 <NavItem icon={<BrainIcon />} label="AI売上予測" isActive={currentPage === 'ai_forecast'} onClick={() => setCurrentPage('ai_forecast')} />
+                <NavItem icon={<NoteIcon />} label="AI設定" isActive={currentPage === 'ai_settings'} onClick={() => setCurrentPage('ai_settings')} />
               </div>
             </div>
             
