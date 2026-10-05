@@ -2920,22 +2920,30 @@ const callGemini = async ({ systemText, contents, model }) => {
     const candidates = model ? [model] : await getAutoGeminiModels();
     let lastError = '利用できるモデルが見つかりませんでした。';
     for (const name of candidates) {
-        const response = await fetch(`${GEMINI_BASE_URL}/models/${name}:generateContent`, {
+        // コード実行を有効にして、AIが添付の日別データから正確に再計算できるようにする
+        const request = (withCodeExecution) => fetch(`${GEMINI_BASE_URL}/models/${name}:generateContent`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
             body: JSON.stringify({
                 systemInstruction: { parts: [{ text: systemText }] },
                 contents,
+                ...(withCodeExecution ? { tools: [{ codeExecution: {} }] } : {}),
                 generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
             }),
         });
-        const result = await response.json().catch(() => ({}));
+        let response = await request(true);
+        let result = await response.json().catch(() => ({}));
+        if (response.status === 400 && /code.?execution|tool/i.test(result.error?.message || '')) {
+            // コード実行に対応していないモデルの場合は、コード実行なしで問い合わせ直す
+            response = await request(false);
+            result = await response.json().catch(() => ({}));
+        }
         if (!response.ok) {
             lastError = describeGeminiError(response.status, result.error?.message);
             if (response.status === 404) continue;   // このモデルは使えない → 次の候補へ
             throw new Error(lastError);
         }
-        const text = (result.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('').trim();
+        const text = (result.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('').trim();
         if (text) return { text, model: name };
         lastError = `回答が空でした（${result.promptFeedback?.blockReason || result.candidates?.[0]?.finishReason || '理由不明'}）`;
     }
@@ -2988,7 +2996,6 @@ const aiDiffPct = (cy, ly) => (cy != null && ly > 0) ? `${cy >= ly ? '+' : ''}${
 const aiSum = (rows, key) => rows.reduce((sum, r) => sum + (r[key] || 0), 0);
 const AI_WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];   // 月〜日
 const AI_RAIN_MM = 5;                             // この降水量以上を「雨の日」とする
-const AI_DAILY_ROWS_MAX_DAYS = 93;                // これより長い期間は日別データを渡さない
 
 // 日報ドキュメントを集計用の行に変換（売上が入っていない日は対象外）
 const toAiRow = (report, isLy = false) => {
@@ -3067,8 +3074,60 @@ const describeAiAggregateShort = (agg) => {
     return `${agg.n}日 日販${aiYen(agg.salesAvg)} 客数${aiYen(agg.customersAvg)} 商品廃棄率${aiPct(agg.fieldRates.waste_product)} 廃棄値下げ率${aiPct(agg.wasteRate)}`;
 };
 
-const describeAiEvent = (event) => `${event.date || '日付なし'} ${event.store || '全店'}: ${event.note}`;
+const describeAiEvent = (event) => `${event.date || '日付なし'} ${event.store || '全店'}: ${event.note}${event.exclude ? '［集計から除外］' : ''}`;
 
+// 出来事の記録のうち「集計から除外」に指定された「日付_店舗」の集合を作る
+const buildAiExcludedKeys = (events, storeNames) => {
+    const keys = new Set();
+    (events || []).forEach(e => {
+        if (!e?.exclude || !e.date) return;
+        (e.store ? [e.store] : storeNames).forEach(name => keys.add(`${e.date}_${name}`));
+    });
+    return keys;
+};
+const isAiExcludedRow = (row, excludedKeys) => excludedKeys.has(`${row.date}_${row.store}`);
+
+// AIがコード実行で再計算するための日別データ（CSV）。groups は [{ label, rows }]
+const buildAiDailyCsv = (groups, storeNames, excludedKeys) => {
+    const lines = [['区分', '日付', '曜日', '店舗', '日販', '客数', ...HAIKI_WASTE_FIELDS.map(f => f.label), '最高気温', '降水mm', '除外指定'].join(',')];
+    groups.forEach(({ label, rows }) => {
+        [...rows]
+            .sort((a, b) => a.date === b.date ? storeNames.indexOf(a.store) - storeNames.indexOf(b.store) : a.date.localeCompare(b.date))
+            .forEach(r => {
+                lines.push([
+                    label, r.date, WEEKDAY_LABELS[r.dow], r.store, r.sales, r.customers,
+                    ...HAIKI_WASTE_FIELDS.map(f => r.hasWaste ? r[f.key] : ''),
+                    r.weather?.maxTemp ?? '', r.weather?.precipitation ?? '',
+                    isAiExcludedRow(r, excludedKeys) ? 1 : '',
+                ].join(','));
+            });
+    });
+    return lines.join('\n');
+};
+const AI_DAILY_CSV_NOTE = `添付のCSVファイルに日別データが入っている。列は 区分,日付,曜日,店舗,日販,客数,${HAIKI_WASTE_FIELDS.map(f => f.label).join(',')},最高気温,降水mm,除外指定。廃棄・値下げの列が空の日は廃棄未入力。除外指定が1の日は「集計から除外」に指定された日。`;
+
+const toBase64Utf8 = (text) => {
+    const bytes = new TextEncoder().encode(text);
+    const CHUNK = 0x8000;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+    }
+    return btoa(binary);
+};
+
+// 会話履歴を Gemini の contents に変換する。日別データのCSVは最初の発言に添付する
+const buildAiContents = (messages, csv) => {
+    const contents = messages
+        .filter(m => !m.isError && !m.isLocal)
+        .map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
+    if (csv && contents.length > 0) {
+        contents[0].parts.unshift({ inlineData: { mimeType: 'text/csv', data: toBase64Utf8(csv) } });
+    }
+    return contents;
+};
+
+// 集計データ（文章）と日別データ（CSV）を作る
 const buildAiDataSummary = ({ reports, reportsLY, stores, dateRange, events }) => {
     const startStr = getLocalDateString(dateRange.startDate);
     const endStr = getLocalDateString(dateRange.endDate);
@@ -3080,6 +3139,7 @@ const buildAiDataSummary = ({ reports, reportsLY, stores, dateRange, events }) =
 
     const cyRows = reports.map(r => toAiRow(r)).filter(r => r && storeNames.includes(r.store) && r.date >= startStr && r.date <= endStr);
     const lyRows = reportsLY.map(r => toAiRow(r, true)).filter(r => r && storeNames.includes(r.store) && r.date >= lyStartStr && r.date <= lyEndStr);
+    const excludedKeys = buildAiExcludedKeys(events, storeNames);
     const rowsFor = (rows, name) => name === totalLabel ? toAiTotalRows(rows) : rows.filter(r => r.store === name);
     const dayLabel = (r) => `${r.date}(${WEEKDAY_LABELS[r.dow]})`;
 
@@ -3088,23 +3148,52 @@ const buildAiDataSummary = ({ reports, reportsLY, stores, dateRange, events }) =
     lines.push('【単位と定義】金額は円、1日あたりの平均。廃棄値下げ計＝商品廃棄＋オーナー値下げ8%＋同10%＋販促値下げ8%＋同10%。率は対売上比。前年同期は同じ日付の前年。');
     if (cyRows.length === 0) {
         lines.push('この期間には売上データがありません。');
-        return lines.join('\n');
+        return { text: lines.join('\n'), csv: '' };
     }
 
+    const pushStoreSummary = (cySource, lySource) => {
+        [...storeNames, totalLabel].forEach(name => {
+            const cy = aggregateAiRows(rowsFor(cySource, name));
+            const ly = aggregateAiRows(rowsFor(lySource, name));
+            lines.push(`■${name}`);
+            lines.push(`  本年: ${describeAiAggregate(cy)}`);
+            lines.push(`  前年同期: ${describeAiAggregate(ly)}`);
+            if (cy && ly) {
+                const wasteDiff = ly.wasteDays > 0 && cy.wasteDays > 0
+                    ? ` 廃棄値下げ計${aiDiffPct(cy.wasteAvg, ly.wasteAvg)} 商品廃棄${aiDiffPct(cy.fields.waste_product, ly.fields.waste_product)} オーナー値下げ8%${aiDiffPct(cy.fields.waste_owner_8, ly.fields.waste_owner_8)}`
+                    : '';
+                lines.push(`  前年比: 日販${aiDiffPct(cy.salesAvg, ly.salesAvg)} 客数${aiDiffPct(cy.customersAvg, ly.customersAvg)} 客単価${aiDiffPct(cy.spend, ly.spend)}${wasteDiff}`);
+            }
+        });
+    };
+
+    const pushWeekday = (cySource) => {
+        storeNames.forEach(name => {
+            lines.push(`■${name}`);
+            AI_WEEKDAY_ORDER.forEach(dow => {
+                const agg = aggregateAiRows(rowsFor(cySource, name).filter(r => r.dow === dow));
+                if (agg) lines.push(`  ${WEEKDAY_LABELS[dow]}: ${describeAiAggregateShort(agg)}`);
+            });
+        });
+    };
+
+    const tempBands = [[-50, 10], [10, 20], [20, 25], [25, 30], [30, 35], [35, 99]];
+    const pushWeather = (cySource) => {
+        storeNames.forEach(name => {
+            const withWeather = rowsFor(cySource, name).filter(r => r.weather);
+            if (withWeather.length === 0) return;
+            lines.push(`■${name}`);
+            lines.push(`  雨の日: ${describeAiAggregateShort(aggregateAiRows(withWeather.filter(r => (r.weather.precipitation || 0) >= AI_RAIN_MM)))}`);
+            lines.push(`  それ以外: ${describeAiAggregateShort(aggregateAiRows(withWeather.filter(r => (r.weather.precipitation || 0) < AI_RAIN_MM)))}`);
+            tempBands.forEach(([low, high]) => {
+                const agg = aggregateAiRows(withWeather.filter(r => r.weather.maxTemp >= low && r.weather.maxTemp < high));
+                if (agg) lines.push(`  最高気温${low <= -50 ? '' : low}〜${high >= 99 ? '' : high}℃: ${describeAiAggregateShort(agg)}`);
+            });
+        });
+    };
+
     lines.push('', '【1. 店舗別サマリー】');
-    [...storeNames, totalLabel].forEach(name => {
-        const cy = aggregateAiRows(rowsFor(cyRows, name));
-        const ly = aggregateAiRows(rowsFor(lyRows, name));
-        lines.push(`■${name}`);
-        lines.push(`  本年: ${describeAiAggregate(cy)}`);
-        lines.push(`  前年同期: ${describeAiAggregate(ly)}`);
-        if (cy && ly) {
-            const wasteDiff = ly.wasteDays > 0
-                ? ` 廃棄値下げ計${aiDiffPct(cy.wasteAvg, ly.wasteAvg)} 商品廃棄${aiDiffPct(cy.fields.waste_product, ly.fields.waste_product)} オーナー値下げ8%${aiDiffPct(cy.fields.waste_owner_8, ly.fields.waste_owner_8)}`
-                : '';
-            lines.push(`  前年比: 日販${aiDiffPct(cy.salesAvg, ly.salesAvg)} 客数${aiDiffPct(cy.customersAvg, ly.customersAvg)} 客単価${aiDiffPct(cy.spend, ly.spend)}${wasteDiff}`);
-        }
-    });
+    pushStoreSummary(cyRows, lyRows);
 
     const months = [...new Set(cyRows.map(r => r.date.slice(0, 7)))].sort();
     if (months.length > 1) {
@@ -3121,27 +3210,10 @@ const buildAiDataSummary = ({ reports, reportsLY, stores, dateRange, events }) =
     }
 
     lines.push('', '【3. 曜日別（本年）】');
-    storeNames.forEach(name => {
-        lines.push(`■${name}`);
-        AI_WEEKDAY_ORDER.forEach(dow => {
-            const agg = aggregateAiRows(rowsFor(cyRows, name).filter(r => r.dow === dow));
-            if (agg) lines.push(`  ${WEEKDAY_LABELS[dow]}: ${describeAiAggregateShort(agg)}`);
-        });
-    });
+    pushWeekday(cyRows);
 
     lines.push('', `【4. 天気別（本年。雨の日＝降水${AI_RAIN_MM}mm以上）】`);
-    const tempBands = [[-50, 10], [10, 20], [20, 25], [25, 30], [30, 35], [35, 99]];
-    storeNames.forEach(name => {
-        const withWeather = rowsFor(cyRows, name).filter(r => r.weather);
-        if (withWeather.length === 0) return;
-        lines.push(`■${name}`);
-        lines.push(`  雨の日: ${describeAiAggregateShort(aggregateAiRows(withWeather.filter(r => (r.weather.precipitation || 0) >= AI_RAIN_MM)))}`);
-        lines.push(`  それ以外: ${describeAiAggregateShort(aggregateAiRows(withWeather.filter(r => (r.weather.precipitation || 0) < AI_RAIN_MM)))}`);
-        tempBands.forEach(([low, high]) => {
-            const agg = aggregateAiRows(withWeather.filter(r => r.weather.maxTemp >= low && r.weather.maxTemp < high));
-            if (agg) lines.push(`  最高気温${low <= -50 ? '' : low}〜${high >= 99 ? '' : high}℃: ${describeAiAggregateShort(agg)}`);
-        });
-    });
+    pushWeather(cyRows);
 
     lines.push('', '【5. 注意が必要な日（本年）】');
     const wasteRows = cyRows.filter(r => r.hasWaste);
@@ -3205,27 +3277,41 @@ const buildAiDataSummary = ({ reports, reportsLY, stores, dateRange, events }) =
     if (relatedEvents.length === 0) lines.push('登録なし');
     relatedEvents.forEach(e => lines.push(`  ${describeAiEvent(e)}`));
 
-    lines.push('', '【8. 日別データ（本年）】');
-    if (dayCount > AI_DAILY_ROWS_MAX_DAYS) {
-        lines.push(`期間が${AI_DAILY_ROWS_MAX_DAYS}日を超えるため省略。個別の日については上の集計を使うこと。`);
+    // 「集計から除外」に指定された日がある場合は、その日を除いた集計も渡す
+    const cyExcluded = cyRows.filter(r => isAiExcludedRow(r, excludedKeys));
+    const lyExcluded = lyRows.filter(r => isAiExcludedRow(r, excludedKeys));
+    lines.push('', '【8. 除外指定日を除いた集計】');
+    if (cyExcluded.length === 0 && lyExcluded.length === 0) {
+        lines.push('対象期間と前年同期に、除外指定された日はありません。');
     } else {
-        lines.push(`日付,曜日,店舗,日販,客数,${HAIKI_WASTE_FIELDS.map(f => f.label).join(',')},最高気温,降水mm`);
-        [...cyRows].sort((a, b) => a.date === b.date ? storeNames.indexOf(a.store) - storeNames.indexOf(b.store) : a.date.localeCompare(b.date)).forEach(r => {
-            const wastes = HAIKI_WASTE_FIELDS.map(f => r.hasWaste ? r[f.key] : '').join(',');
-            lines.push(`${r.date},${WEEKDAY_LABELS[r.dow]},${r.store},${r.sales},${r.customers},${wastes},${r.weather?.maxTemp ?? ''},${r.weather?.precipitation ?? ''}`);
-        });
+        const cyKept = cyRows.filter(r => !isAiExcludedRow(r, excludedKeys));
+        const lyKept = lyRows.filter(r => !isAiExcludedRow(r, excludedKeys));
+        lines.push(`除いた日（本年）: ${cyExcluded.map(r => `${r.date} ${r.store}`).join('、') || 'なし'}`);
+        lines.push(`除いた日（前年同期）: ${lyExcluded.map(r => `${r.date} ${r.store}`).join('、') || 'なし'}`);
+        lines.push('▼店舗別サマリー（除外後）');
+        pushStoreSummary(cyKept, lyKept);
+        lines.push('▼曜日別（本年・除外後）');
+        pushWeekday(cyKept);
+        lines.push('▼天気別（本年・除外後）');
+        pushWeather(cyKept);
     }
 
-    return lines.join('\n');
+    lines.push('', '【9. 日別データ】');
+    lines.push(`${AI_DAILY_CSV_NOTE}区分は「本年」と「前年同期」。`);
+
+    const csv = buildAiDailyCsv([{ label: '本年', rows: cyRows }, { label: '前年同期', rows: lyRows }], storeNames, excludedKeys);
+    return { text: lines.join('\n'), csv };
 };
 
 const AI_COMMON_RULES = `回答のルール:
-1. 数字は必ず下の「集計データ」にあるものを使う。集計済みの値がある場合は自分で計算し直さない。データに無いことは推測で埋めず、「このデータからは分かりません」と答える。
-2. 結論を先に書き、根拠となる数字を添える。
-3. 原因は断定しない。「〜と重なっています」「〜の可能性があります」のように書く。商品別のデータは無いので、商品ごとの数量には触れない。
-4. 「注意が必要な日」と「出来事の記録」に当てはまる日は、それを踏まえて解釈する。入力ミスの可能性がある値は、その旨を伝える。
-5. 日本語で、画面にそのまま表示される文章として書く。記号による装飾（*や#）や表は使わず、見出しは【】、箇条書きは「・」を使う。特に指定がなければ簡潔にまとめる。
-6. 「経営方針メモ」がある場合は、そこに書かれた考え方・基準・答え方を最優先する。`;
+1. 数字は下の「集計データ」と添付の日別データ（CSV）に基づく。集計済みの値がそのまま使える場合はそれを使う。
+2. 特定の日を除く、条件を絞る、別の切り口で比べるなど、集計済みの値に無い計算を求められた場合は、添付のCSVをコード実行で読み込んで計算して答える。暗算や概算で済ませない。その場合は「日別データから再計算」と書き、除いた日や条件、対象日数を明記する。
+3. 「除外指定日を除いた集計」がある場合、傾向や平均を述べるときは除外後の数字を優先し、除外していることを一言添える。
+4. データに無いことは推測で埋めず、「このデータからは分かりません」と答える。商品別のデータは無いので、商品ごとの数量には触れない。
+5. 結論を先に書き、根拠となる数字を添える。原因は断定せず、「〜と重なっています」「〜の可能性があります」のように書く。
+6. 「注意が必要な日」と「出来事の記録」に当てはまる日は、それを踏まえて解釈する。入力ミスの可能性がある値は、その旨を伝える。
+7. 日本語で、画面にそのまま表示される文章として書く。記号による装飾（*や#）、表、数式の記法は使わず、見出しは【】、箇条書きは「・」を使う。プログラムのコードは回答に書かない。特に指定がなければ簡潔にまとめる。
+8. 「経営方針メモ」がある場合は、そこに書かれた考え方・基準・答え方を最優先する。`;
 
 const buildAiSystemText = ({ role, policy, dataText }) => [
     role,
@@ -3479,12 +3565,9 @@ const AiAnalysisPage = ({ stores, dateRange, onRefresh, aiSettings }) => {
         }
 
         try {
-            const contents = newMessages
-                .filter(m => !m.isError && !m.isLocal)
-                .map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
             const result = await callGemini({
-                systemText: buildAiSystemText({ role: AI_ANALYSIS_ROLE, policy: aiSettings.policy, dataText: dataSummary }),
-                contents,
+                systemText: buildAiSystemText({ role: AI_ANALYSIS_ROLE, policy: aiSettings.policy, dataText: dataSummary.text }),
+                contents: buildAiContents(newMessages, dataSummary.csv),
                 model: aiSettings.model,
             });
             setMessages([...newMessages, { role: 'ai', text: result.text, model: result.model }]);
@@ -3534,7 +3617,7 @@ const AiAnalysisPage = ({ stores, dateRange, onRefresh, aiSettings }) => {
             />
             <details className="mb-3 text-xs text-gray-500">
                 <summary className="cursor-pointer select-none">AIに渡している集計データを表示</summary>
-                <pre className="mt-2 p-3 bg-gray-100 rounded max-h-64 overflow-auto whitespace-pre-wrap">{dataSummary}</pre>
+                <pre className="mt-2 p-3 bg-gray-100 rounded max-h-64 overflow-auto whitespace-pre-wrap">{dataSummary.text}</pre>
             </details>
             <AiChatInput userInput={userInput} setUserInput={setUserInput} onSend={handleSendMessage} disabled={isAiLoading || isLoading} isAiLoading={isAiLoading} speech={speech} />
         </div>
@@ -4082,10 +4165,15 @@ const buildAiForecastData = async (stores, events) => {
         return snapshot.docs.map(d => toAiRow({ id: d.id, ...d.data() }, isLy)).filter(r => r && storeNames.includes(r.store));
     };
     const todayLy = getSameCalendarDateLastYear(today);
-    const [recentRows, lyRows] = await Promise.all([
+    const [allRecentRows, allLyRows] = await Promise.all([
         fetchRows(addDays(today, -56), addDays(today, -1), false),
         fetchRows(addDays(todayLy, -35), addDays(todayLy, 13), true),
     ]);
+    // 「集計から除外」に指定された日は、予測の基準にする平均から外す
+    const excludedKeys = buildAiExcludedKeys(events, storeNames);
+    const recentRows = allRecentRows.filter(r => !isAiExcludedRow(r, excludedKeys));
+    const lyRows = allLyRows.filter(r => !isAiExcludedRow(r, excludedKeys));
+    const excludedRows = [...allRecentRows, ...allLyRows].filter(r => isAiExcludedRow(r, excludedKeys));
 
     const last28Str = getLocalDateString(addDays(today, -28));
     const ly28StartStr = getLocalDateString(addDays(todayLy, -28));
@@ -4102,6 +4190,7 @@ const buildAiForecastData = async (stores, events) => {
     });
 
     lines.push('', '【店舗別データ】');
+    lines.push(`除外指定のため下の平均から外した日: ${excludedRows.map(r => `${r.date} ${r.store}`).join('、') || 'なし'}`);
     storeNames.forEach(name => {
         const rows = recentRows.filter(r => r.store === name);
         const last28 = rows.filter(r => r.date >= last28Str);
@@ -4135,7 +4224,11 @@ const buildAiForecastData = async (stores, events) => {
     if (relatedEvents.length === 0) lines.push('登録なし');
     relatedEvents.forEach(e => lines.push(`  ${describeAiEvent(e)}`));
 
-    return lines.join('\n');
+    lines.push('', '【日別データ】');
+    lines.push(`${AI_DAILY_CSV_NOTE}区分は「直近8週」と「前年同時期」。`);
+
+    const csv = buildAiDailyCsv([{ label: '直近8週', rows: allRecentRows }, { label: '前年同時期', rows: allLyRows }], storeNames, excludedKeys);
+    return { text: lines.join('\n'), csv };
 };
 
 const AiForecastPage = ({ stores, aiSettings }) => {
@@ -4155,14 +4248,11 @@ const AiForecastPage = ({ stores, aiSettings }) => {
         setIsAiLoading(true);
 
         try {
-            const dataText = await buildAiForecastData(stores, aiSettings.events);
-            setForecastData(dataText);
-            const contents = newMessages
-                .filter(m => !m.isError)
-                .map(m => ({ role: m.role === 'user' ? 'user' : 'model', parts: [{ text: m.text }] }));
+            const data = await buildAiForecastData(stores, aiSettings.events);
+            setForecastData(data.text);
             const result = await callGemini({
-                systemText: buildAiSystemText({ role: AI_FORECAST_ROLE, policy: aiSettings.policy, dataText }),
-                contents,
+                systemText: buildAiSystemText({ role: AI_FORECAST_ROLE, policy: aiSettings.policy, dataText: data.text }),
+                contents: buildAiContents(newMessages, data.csv),
                 model: aiSettings.model,
             });
             setMessages([...newMessages, { role: 'ai', text: result.text, model: result.model }]);
@@ -4214,7 +4304,7 @@ const AiSettingsPage = ({ stores, aiSettings }) => {
     const [isDirty, setIsDirty] = useState(false);
     const [isSaving, setIsSaving] = useState(false);
     const [message, setMessage] = useState(null);
-    const [newEvent, setNewEvent] = useState({ date: '', store: '', note: '' });
+    const [newEvent, setNewEvent] = useState({ date: '', store: '', note: '', exclude: false });
     const [models, setModels] = useState([]);
     const [isTesting, setIsTesting] = useState(false);
     const [testResult, setTestResult] = useState(null);
@@ -4257,10 +4347,14 @@ const AiSettingsPage = ({ stores, aiSettings }) => {
             showMessage('error', '出来事の内容を入力してください。');
             return;
         }
+        if (newEvent.exclude && !newEvent.date) {
+            showMessage('error', '集計から除外するには日付を指定してください。');
+            return;
+        }
         try {
-            const event = { id: String(Date.now()), date: newEvent.date, store: newEvent.store, note: newEvent.note.trim() };
+            const event = { id: String(Date.now()), date: newEvent.date, store: newEvent.store, note: newEvent.note.trim(), exclude: newEvent.exclude };
             await saveAiSettings({ events: [...(aiSettings.events || []), event] });
-            setNewEvent({ date: '', store: '', note: '' });
+            setNewEvent({ date: '', store: '', note: '', exclude: false });
             showMessage('success', '出来事を追加しました。');
         } catch (error) {
             showMessage('error', `保存エラー: ${error.message}`);
@@ -4352,7 +4446,11 @@ const AiSettingsPage = ({ stores, aiSettings }) => {
                         <button type="button" onClick={handleAddEvent} className="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700">追加</button>
                     </div>
                 </div>
-                <p className="mt-2 text-xs text-gray-500">日付を空にすると、期間に関係なく毎回AIに渡されます。数日続く出来事は、初日の日付で「〜◯日まで」と内容に書いてください。</p>
+                <label className="mt-3 inline-flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                    <input type="checkbox" className="rounded border-gray-300 text-blue-600 focus:ring-blue-500" checked={newEvent.exclude} onChange={(e) => setNewEvent({ ...newEvent, exclude: e.target.checked })} />
+                    この日を集計から除外する（催事など、通常の営業と比べられない日）
+                </label>
+                <p className="mt-2 text-xs text-gray-500">除外にチェックした日は、AIに渡す集計に「その日を除いた数字」が追加され、売上予測の基準からも外れます。日付を空にすると、期間に関係なく毎回AIに渡されます。数日続く出来事は、初日の日付で「〜◯日まで」と内容に書いてください。</p>
                 {events.length === 0 ? (
                     <p className="mt-4 text-sm text-gray-500">まだ記録がありません。</p>
                 ) : (
@@ -4371,7 +4469,7 @@ const AiSettingsPage = ({ stores, aiSettings }) => {
                                     <tr key={event.id} className="border-b">
                                         <td className="px-3 py-2 whitespace-nowrap">{event.date ? formatDateWithWeekday(event.date) : '日付なし'}</td>
                                         <td className="px-3 py-2 whitespace-nowrap">{event.store || '全店'}</td>
-                                        <td className="px-3 py-2">{event.note}</td>
+                                        <td className="px-3 py-2">{event.note}{event.exclude && <span className="ml-2 px-2 py-0.5 text-xs rounded-full bg-yellow-100 text-yellow-800 whitespace-nowrap">集計から除外</span>}</td>
                                         <td className="px-3 py-2 text-right"><button type="button" onClick={() => handleDeleteEvent(event)} className="text-red-600 hover:underline whitespace-nowrap">削除</button></td>
                                     </tr>
                                 ))}
