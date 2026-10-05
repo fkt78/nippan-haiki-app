@@ -1,5 +1,7 @@
 {
-  "projects": {},
+  "projects": {
+    "default": "hattyuu-kanri-app-test"
+  },
   "targets": {
     "hattyuu-kanri-app-test": {
       "hosting": {

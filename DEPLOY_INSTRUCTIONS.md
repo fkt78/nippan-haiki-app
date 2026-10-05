@@ -1,52 +1,38 @@
-# Firebase Hosting デプロイ手順（アプリ名付きURL）
+# デプロイ手順
 
-## 現在のデプロイ状況
+## デプロイ先
 
-✅ 既存プロジェクト「hattyuu-kanri-app-test」にデプロイ済み
-- URL: https://hattyuu-kanri-app-test.web.app
+| 項目 | 値 |
+|---|---|
+| Firebaseプロジェクト | `hattyuu-kanri-app-test` |
+| Hostingサイト（ターゲット） | `nippan-haiki-app` |
+| 公開URL | https://nippan-haiki-app.web.app |
 
-## アプリ名をURLに含める方法
+`hattyuu-kanri-app-test` は他のアプリと共用のプロジェクトです。このアプリがデプロイするのは **Hostingの `nippan-haiki-app` サイトだけ**です。Firestoreのルールや他のサイトには触れません。
 
-### 方法1: Firebaseコンソールで新しいプロジェクトを作成（推奨）
+## 手順
 
-1. Firebaseコンソールにアクセス: https://console.firebase.google.com/
-2. 「プロジェクトを追加」をクリック
-3. プロジェクト名を入力（例: 「nippan-haiki-app」）
-4. プロジェクトIDを確認（自動生成されますが、編集可能）
-   - プロジェクトIDに「nippan-haiki-app」を含めるように設定
-   - 例: `nippan-haiki-app-fkt` または `nippan-haiki-app-2025`
-5. プロジェクトを作成
-6. Hostingを有効化
-7. 以下のコマンドで新しいプロジェクトに切り替えてデプロイ:
+1. `package.json` の `version` を上げる（画面左下の「v◯.◯.◯」に表示されます）
+2. 変更をコミットして `main` にプッシュする
+3. デプロイする
 
 ```bash
-# 新しいプロジェクトを使用
-firebase use <新しいプロジェクトID>
-
-# デプロイ
-npm run build
-firebase deploy --only hosting
+bash deploy.sh
 ```
 
-### 方法2: 既存プロジェクトでカスタムドメインを設定
-
-1. Firebaseコンソールで「hattyuu-kanri-app-test」プロジェクトを開く
-2. Hosting > カスタムドメイン
-3. カスタムドメインを追加（例: `nippan-haiki-app.web.app`）
-   - 注意: `.web.app`ドメインはFirebaseが自動生成するため、完全にカスタムドメインを設定する場合は独自ドメインが必要です
-
-## 現在の設定ファイル
-
-- `firebase.json`: Hosting設定済み
-- `package.json`: ビルドスクリプト設定済み
-- `.gitignore`: 適切に設定済み
-
-## デプロイコマンド
+`deploy.sh` は次の2つを順に実行します。
 
 ```bash
-# ビルド
 npm run build
-
-# デプロイ
-firebase deploy --only hosting
+firebase deploy --only hosting:nippan-haiki-app --project hattyuu-kanri-app-test
 ```
+
+## 反映の確認
+
+- https://nippan-haiki-app.web.app を再読み込みし、左下のバージョンと「デプロイ」の日時が新しくなっていることを確認する
+- 開いたままの端末は再読み込みするまで古い版のままです
+
+## 前提
+
+- `firebase-tools` でログイン済みであること（`firebase login:list` で確認）
+- AI分析でGeminiを使う場合のみ、ビルド前に `.env` に `VITE_GEMINI_API_KEY` を設定する（未設定なら簡易分析モードで動作）

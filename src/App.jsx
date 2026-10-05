@@ -533,6 +533,50 @@ const getWeatherIcon = (weatherCode) => {
     return icons[weatherCode] || '❓';
 };
 
+// Open-Meteo から指定日の天気を取得（取得できなければ null）
+const fetchOpenMeteoDaily = async (baseUrl, date) => {
+    try {
+        const url = `${baseUrl}?latitude=34.77&longitude=136.13&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo&start_date=${date}&end_date=${date}`;
+        const response = await fetch(url);
+        const data = await response.json();
+        if (!data.daily || data.daily.weathercode?.[0] == null || data.daily.temperature_2m_max?.[0] == null) return null;
+        return {
+            weatherCode: data.daily.weathercode[0],
+            maxTemp: data.daily.temperature_2m_max[0],
+            precipitation: data.daily.precipitation_sum?.[0] ?? 0,
+        };
+    } catch (error) {
+        console.error("天気データの取得に失敗しました:", error);
+        return null;
+    }
+};
+
+// 指定日の天気を返す。保存済みの天気があればそれを使い、無ければ Open-Meteo から取得する
+const fetchWeatherForDate = async (date) => {
+    try {
+        const weatherQuery = query(
+            collection(db, dailyReportsPath),
+            where("date", "==", getTimestampFromDateString(date)),
+            limit(10)
+        );
+        const weatherSnapshot = await getDocs(weatherQuery);
+        const reportWithWeather = weatherSnapshot.docs.find(doc => doc.data().weather);
+        if (reportWithWeather) return reportWithWeather.data().weather;
+    } catch (error) {
+        console.error("保存済み天気データの取得に失敗しました:", error);
+    }
+    // 予報APIは約3か月前までしか返さないため、1週間より前の日付は過去実績APIを先に使う
+    const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+    const ARCHIVE_URL = 'https://archive-api.open-meteo.com/v1/archive';
+    const daysAgo = Math.floor((new Date() - new Date(`${date}T00:00:00`)) / (1000 * 60 * 60 * 24));
+    const urls = daysAgo > 7 ? [ARCHIVE_URL, FORECAST_URL] : [FORECAST_URL, ARCHIVE_URL];
+    for (const baseUrl of urls) {
+        const weather = await fetchOpenMeteoDaily(baseUrl, date);
+        if (weather) return weather;
+    }
+    return null;
+};
+
 const useReports = (startDate, endDate, trigger) => {
     const [data, setData] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -710,47 +754,18 @@ const NippoInputPage = ({ stores, employees }) => {
     const [message, setMessage] = useState('');
 
     useEffect(() => {
+        // 日付・店舗を素早く切り替えたとき、古い読み込み結果で画面を上書きしないためのフラグ
+        let cancelled = false;
         const processDateChange = async () => {
             if (!date) return;
-            
+
             setIsWeatherLoading(true);
             setWeatherData(null);
             setHourlySummary(null);
-            
-            let existingWeather = null;
-            const weatherQuery = query(
-                collection(db, dailyReportsPath), 
-                where("date", "==", getTimestampFromDateString(date)),
-                limit(10)
-            );
-            const weatherSnapshot = await getDocs(weatherQuery);
-            const reportWithWeather = weatherSnapshot.docs.find(doc => doc.data().weather);
 
-            if (reportWithWeather) {
-                existingWeather = reportWithWeather.data().weather;
-            }
-            
-            if (existingWeather) {
-                setWeatherData(existingWeather);
-            } else {
-                try {
-                    const lat = 34.77;
-                    const lon = 136.13;
-                    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo&start_date=${date}&end_date=${date}`;
-                    const response = await fetch(url);
-                    const data = await response.json();
-                    if (data.daily) {
-                        const newWeatherData = {
-                            weatherCode: data.daily.weathercode[0],
-                            maxTemp: data.daily.temperature_2m_max[0],
-                            precipitation: data.daily.precipitation_sum[0],
-                        };
-                        setWeatherData(newWeatherData);
-                    }
-                } catch (error) {
-                    console.error("天気データの取得に失敗しました:", error);
-                }
-            }
+            const weather = await fetchWeatherForDate(date);
+            if (cancelled) return;
+            setWeatherData(weather);
             setIsWeatherLoading(false);
 
             // 作業割当から当日の時間帯データを取得（天気取得と同タイミング）
@@ -760,6 +775,7 @@ const NippoInputPage = ({ stores, employees }) => {
                     const sagyouStoreId = Object.entries(sagyouMap).find(([, name]) => name === storeName)?.[0];
                     if (sagyouStoreId) {
                         const docs = await fetchSagyouHourly(sagyouStoreId, date, date);
+                        if (cancelled) return;
                         const hourlyData = docs[0]?.hourlyData;
                         if (hourlyData && Object.keys(hourlyData).length > 0) {
                             setHourlySummary(summarizeHourly(hourlyData));
@@ -774,6 +790,7 @@ const NippoInputPage = ({ stores, employees }) => {
                 const docId = `${date}_${storeName}`;
                 const docRef = doc(db, dailyReportsPath, docId);
                 const docSnap = await getDoc(docRef);
+                if (cancelled) return;
                 if (docSnap.exists()) { 
                     const data = docSnap.data();
                     setFormData({ 
@@ -789,6 +806,7 @@ const NippoInputPage = ({ stores, employees }) => {
         };
         
         processDateChange();
+        return () => { cancelled = true; };
     }, [date, storeName]);
 
     const hourlyComparison = useMemo(() => {
@@ -918,52 +936,24 @@ const HaikiInputPage = ({ stores, employees }) => {
     const [message, setMessage] = useState('');
 
     useEffect(() => {
+        // 日付・店舗を素早く切り替えたとき、古い読み込み結果で画面を上書きしないためのフラグ
+        let cancelled = false;
         const processDateChange = async () => {
             if (!date) return;
-            
+
             setIsWeatherLoading(true);
             setWeatherData(null);
-            
-            let existingWeather = null;
-            const weatherQuery = query(
-                collection(db, dailyReportsPath), 
-                where("date", "==", getTimestampFromDateString(date)),
-                limit(10)
-            );
-            const weatherSnapshot = await getDocs(weatherQuery);
-            const reportWithWeather = weatherSnapshot.docs.find(doc => doc.data().weather);
 
-            if (reportWithWeather) {
-                existingWeather = reportWithWeather.data().weather;
-            }
-            
-            if (existingWeather) {
-                setWeatherData(existingWeather);
-            } else {
-                try {
-                    const lat = 34.77;
-                    const lon = 136.13;
-                    const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=weathercode,temperature_2m_max,precipitation_sum&timezone=Asia%2FTokyo&start_date=${date}&end_date=${date}`;
-                    const response = await fetch(url);
-                    const data = await response.json();
-                    if (data.daily) {
-                        const newWeatherData = {
-                            weatherCode: data.daily.weathercode[0],
-                            maxTemp: data.daily.temperature_2m_max[0],
-                            precipitation: data.daily.precipitation_sum[0],
-                        };
-                        setWeatherData(newWeatherData);
-                    }
-                } catch (error) {
-                    console.error("天気データの取得に失敗しました:", error);
-                }
-            }
+            const weather = await fetchWeatherForDate(date);
+            if (cancelled) return;
+            setWeatherData(weather);
             setIsWeatherLoading(false);
             
             if (storeName) {
                 const docId = `${date}_${storeName}`;
                 const docRef = doc(db, dailyReportsPath, docId);
                 const docSnap = await getDoc(docRef);
+                if (cancelled) return;
                 if (docSnap.exists()) { 
                     const data = docSnap.data();
                     setFormData({ waste_product: data.waste_product || '', waste_owner_8: data.waste_owner_8 || '', waste_owner_10: data.waste_owner_10 || '', waste_promo_8: data.waste_promo_8 || '', waste_promo_10: data.waste_promo_10 || '' });
@@ -976,6 +966,7 @@ const HaikiInputPage = ({ stores, employees }) => {
         };
         
         processDateChange();
+        return () => { cancelled = true; };
     }, [date, storeName]);
 
     const handleSubmit = async (e) => {
