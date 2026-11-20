@@ -1362,6 +1362,13 @@ const getStoreChartColors = (stores) => {
     return colors;
 };
 
+// グラフは「入力のある値」だけを描く。1件も入力が無ければ null を返して線を途切れさせる
+// （前年データがあるだけの日に、本年の実績が 0 として描かれるのを防ぐ）
+const sumEnteredValues = (rows, key) => {
+    const entered = rows.filter(r => r && r[key] != null);
+    return entered.length > 0 ? entered.reduce((sum, r) => sum + r[key], 0) : null;
+};
+
 const buildStoreMetricChartData = ({
     stores,
     labelEntries,
@@ -1385,7 +1392,7 @@ const buildStoreMetricChartData = ({
             const reportDateStr = getLocalDateString(r.date.toDate());
             const index = labelEntries.findIndex(entry => entry.key === reportDateStr);
             if (index === -1) return;
-            storeData[index] = getCyValue ? getCyValue(r) : (r[cyKey] ?? 0);
+            storeData[index] = getCyValue ? getCyValue(r) : (r[cyKey] ?? null);
             const lyDateVal = getLyDateValue ? getLyDateValue(r) : (r[lyKey] ?? null);
             const lyDowVal = getLyDowValue ? getLyDowValue(r) : (r[`${lyKey}_dow`] ?? null);
             storeDataLyDate[index] = lyDateVal;
@@ -1495,14 +1502,23 @@ const HAIKI_WASTE_FIELDS = [
     { key: 'waste_promo_10', lyKey: 'waste_promo_10_ly', label: '販促値下げ10%', color: 'rgba(153, 102, 255, 1)' },
 ];
 
+const getHaikiFieldKey = (field, variant = 'cy') => {
+    if (variant === 'date') return field.lyKey;
+    if (variant === 'dow') return `${field.key}_ly_dow`;
+    return field.key;
+};
+
+// 廃棄・値下げの5項目のうち1つでも入力があるか
+const hasHaikiInput = (report, variant = 'cy') =>
+    !!report && HAIKI_WASTE_FIELDS.some(field => report[getHaikiFieldKey(field, variant)] != null);
+
+// グラフ用の合計。入力が1項目も無ければ null を返す（線を描かない）
 const sumHaikiWaste = (report, variant = 'cy') => {
-    if (!report) return 0;
-    return HAIKI_WASTE_FIELDS.reduce((sum, field) => {
-        let key = field.key;
-        if (variant === 'date') key = field.lyKey;
-        if (variant === 'dow') key = `${field.key}_ly_dow`;
-        return sum + (report[key] || 0);
-    }, 0);
+    if (!hasHaikiInput(report, variant)) return null;
+    return HAIKI_WASTE_FIELDS.reduce(
+        (sum, field) => sum + (report[getHaikiFieldKey(field, variant)] || 0),
+        0
+    );
 };
 
 const getHaikiLyVariant = (lyCompareMode) => (lyCompareMode === 'weekday' ? 'dow' : 'date');
@@ -1548,27 +1564,21 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
             lyCompareMode,
             colors: storeColors,
             getCyValue: (r) => sumHaikiWaste(r, 'cy'),
-            getLyDateValue: (r) => sumHaikiWaste(r, 'date') || null,
-            getLyDowValue: (r) => sumHaikiWaste(r, 'dow') || null,
+            getLyDateValue: (r) => sumHaikiWaste(r, 'date'),
+            getLyDowValue: (r) => sumHaikiWaste(r, 'dow'),
         });
+
+        // 日付ごとの行を1回だけ作り、各項目の集計で使い回す
+        const reportsByLabelDate = labelEntries.map(entry =>
+            filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key)
+        );
 
         const itemLineChartData = {
             labels: labelEntries.map(entry => entry.label),
             datasets: HAIKI_WASTE_FIELDS.flatMap(item => {
-                const cyData = labelEntries.map(entry => {
-                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key);
-                    return reportsForDay.reduce((sum, r) => sum + (r[item.key] || 0), 0);
-                });
-                const lyDateData = labelEntries.map(entry => {
-                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key);
-                    const val = reportsForDay.reduce((sum, r) => sum + (r[item.lyKey] || 0), 0);
-                    return val || null;
-                });
-                const lyDowData = labelEntries.map(entry => {
-                    const reportsForDay = filteredReports.filter(r => r.date && getLocalDateString(r.date.toDate()) === entry.key);
-                    const val = reportsForDay.reduce((sum, r) => sum + (r[`${item.key}_ly_dow`] || 0), 0);
-                    return val || null;
-                });
+                const cyData = reportsByLabelDate.map(rows => sumEnteredValues(rows, item.key));
+                const lyDateData = reportsByLabelDate.map(rows => sumEnteredValues(rows, item.lyKey));
+                const lyDowData = reportsByLabelDate.map(rows => sumEnteredValues(rows, `${item.key}_ly_dow`));
                 const datasets = [{
                     label: `${item.label} (本年)`,
                     data: cyData,
@@ -2725,13 +2735,18 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
         const y1Colors = ['rgba(54, 162, 235, 1)', 'rgba(75, 192, 192, 1)', 'rgba(153, 102, 255, 1)', 'rgba(255, 99, 132, 1)'];
         const y2Colors = ['rgba(255, 159, 64, 1)', 'rgba(255, 205, 86, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)'];
 
+        // 入力のある値だけを返す。未入力は null（グラフに描かない）
         const getMetricValue = (report, metric) => {
             if (!report) return null;
-            if (metric.value === 'total_waste') {
-                return (report.waste_product || 0) + (report.waste_owner_8 || 0) + (report.waste_owner_10 || 0) + (report.waste_promo_8 || 0) + (report.waste_promo_10 || 0);
-            }
-            return report[metric.value] || 0;
-        }
+            if (metric.value === 'total_waste') return sumHaikiWaste(report, 'cy');
+            return report[metric.value] ?? null;
+        };
+
+        // 3店合計。入力のある店舗だけを足し、1店も入力が無ければ null
+        const sumStoreValues = (rows, metric) => {
+            const values = rows.map(r => getMetricValue(r, metric)).filter(v => v != null);
+            return values.length > 0 ? values.reduce((sum, v) => sum + v, 0) : null;
+        };
 
         const reportsByDate = new Map();
         combinedReports.forEach(r => {
@@ -2750,7 +2765,7 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
                 const data = labels.map(labelDate => {
                     const dailyReports = reportsByDate.get(labelDate) || [];
                     if (storeName === '3店合計') {
-                        return dailyReports.reduce((sum, r) => sum + getMetricValue(r, y1Metric), 0);
+                        return sumStoreValues(dailyReports, y1Metric);
                     }
                     const report = dailyReports.find(r => r.store === storeName);
                     return getMetricValue(report, y1Metric);
@@ -2766,7 +2781,7 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
                  const data = labels.map(labelDate => {
                     const dailyReports = reportsByDate.get(labelDate) || [];
                     if (storeName === '3店合計') {
-                        return dailyReports.reduce((sum, r) => sum + getMetricValue(r, y2Metric), 0);
+                        return sumStoreValues(dailyReports, y2Metric);
                     }
                     const report = dailyReports.find(r => r.store === storeName);
                     return getMetricValue(report, y2Metric);
