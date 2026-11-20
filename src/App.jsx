@@ -1485,7 +1485,7 @@ const buildStoreMetricChartData = ({
             data: storeData,
             borderColor: color,
             backgroundColor: color.replace('1)', '0.1)'),
-            fill: true,
+            fill: false,
             tension: 0.1,
         }];
         if (lyCompareMode === 'date' || lyCompareMode === 'both') {
