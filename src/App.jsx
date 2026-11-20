@@ -4,6 +4,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, writeBatch, onSnapshot, query, where, Timestamp, limit, documentId, deleteField } from 'firebase/firestore';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement, PointElement, LineElement } from 'chart.js';
+import zoomPlugin from 'chartjs-plugin-zoom';
 import { Line, Doughnut } from 'react-chartjs-2';
 
 // ==============================================================================
@@ -11,7 +12,7 @@ import { Line, Doughnut } from 'react-chartjs-2';
 // ==============================================================================
 
 // Chart.jsのコンポーネントを登録
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement, PointElement, LineElement);
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend, ArcElement, PointElement, LineElement, zoomPlugin);
 
 // Firebase Configuration (User Provided)
 const firebaseConfig = {
@@ -1324,6 +1325,74 @@ const buildDateLabelEntries = (startDate, endDate) => {
     return entries;
 };
 
+// ==============================================================================
+// グラフの拡大・縮小（chartjs-plugin-zoom）
+// ==============================================================================
+
+// ホイールに修飾キーを付けないとページのスクロールを奪ってしまうため、Option(Alt)押下時のみ有効にする
+const CHART_ZOOM_HINT = 'ドラッグで囲むと拡大 ／ Option(Alt)＋ホイールで拡大・縮小 ／ Shift＋ドラッグで表示位置を移動';
+
+const useChartZoom = (chartCount) => {
+    const chartsRef = useRef([]);
+    const [isZoomed, setIsZoomed] = useState(false);
+
+    // index ごとに同じ関数を使い回し、再描画のたびに ref が付け外しされるのを防ぐ
+    const chartRefs = useMemo(
+        () => Array.from({ length: chartCount }, (_, i) => (chart) => { chartsRef.current[i] = chart; }),
+        [chartCount]
+    );
+
+    const zoomOptions = useMemo(() => ({
+        zoom: {
+            wheel: { enabled: true, modifierKey: 'alt', speed: 0.12 },
+            drag: {
+                enabled: true,
+                // わずかなドラッグをクリックと区別し、誤って拡大されるのを防ぐ
+                threshold: 10,
+                backgroundColor: 'rgba(59, 130, 246, 0.15)',
+                borderColor: 'rgba(59, 130, 246, 0.8)',
+                borderWidth: 1,
+            },
+            mode: 'xy',
+            onZoomComplete: () => setIsZoomed(true),
+        },
+        pan: {
+            enabled: true,
+            mode: 'xy',
+            modifierKey: 'shift',
+            onPanComplete: () => setIsZoomed(true),
+        },
+    }), []);
+
+    const resetZoom = () => {
+        chartsRef.current.forEach(chart => chart?.resetZoom?.());
+        setIsZoomed(false);
+    };
+
+    return { chartRefs, zoomOptions, isZoomed, resetZoom };
+};
+
+// 既存のグラフ設定に zoom プラグインの設定を足す
+const withChartZoom = (options, zoomOptions) => ({
+    ...options,
+    plugins: { ...(options.plugins || {}), zoom: zoomOptions },
+});
+
+const ChartZoomControls = ({ isZoomed, onReset }) => (
+    <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-slate-50 border border-gray-200 rounded-xl">
+        <span className="text-xs font-bold text-gray-500 uppercase tracking-wider shrink-0">グラフの拡大</span>
+        <span className="text-xs text-gray-500">{CHART_ZOOM_HINT}</span>
+        <button
+            type="button"
+            onClick={onReset}
+            disabled={!isZoomed}
+            className="ml-auto px-3 py-1.5 text-sm font-medium rounded-lg border transition-all bg-white text-gray-700 border-gray-300 hover:border-blue-400 hover:text-blue-700 disabled:opacity-40 disabled:hover:border-gray-300 disabled:hover:text-gray-700"
+        >
+            表示を戻す
+        </button>
+    </div>
+);
+
 const DashboardLyCompareControls = ({ lyCompareMode, setLyCompareMode }) => (
     <div className="flex flex-wrap items-center gap-3 mb-6 p-4 bg-slate-50 border border-gray-200 rounded-xl">
         <span className="text-xs font-bold text-gray-500 uppercase tracking-wider shrink-0">前年比較</span>
@@ -1443,6 +1512,8 @@ const dashboardLineChartOptions = {
 const NippoDashboard = ({ stores, dateRange, onRefresh }) => {
     const [lyCompareMode, setLyCompareMode] = useState('date');
     const { combinedReports, isLoading } = useDashboardCombinedReports(dateRange, onRefresh);
+    const { chartRefs, zoomOptions, isZoomed, resetZoom } = useChartZoom(3);
+    const chartOptions = useMemo(() => withChartZoom(dashboardLineChartOptions, zoomOptions), [zoomOptions]);
 
     const lineChartData = useMemo(() => {
         const labelEntries = buildDateLabelEntries(dateRange.startDate, dateRange.endDate);
@@ -1485,10 +1556,11 @@ const NippoDashboard = ({ stores, dateRange, onRefresh }) => {
         <div>
             <h1 className="text-3xl font-bold text-gray-800 mb-6">日販分析（前年比較）</h1>
             <DashboardLyCompareControls lyCompareMode={lyCompareMode} setLyCompareMode={setLyCompareMode} />
+            <ChartZoomControls isZoomed={isZoomed} onReset={resetZoom} />
             <div className="grid grid-cols-1 gap-8">
-                <ChartCard title="売上（日販）推移"><Line data={lineChartData.sales} options={dashboardLineChartOptions} /></ChartCard>
-                <ChartCard title="客数 推移"><Line data={lineChartData.customers} options={dashboardLineChartOptions} /></ChartCard>
-                <ChartCard title="客単価 推移"><Line data={lineChartData.customer_spend} options={dashboardLineChartOptions} /></ChartCard>
+                <ChartCard title="売上（日販）推移"><Line ref={chartRefs[0]} data={lineChartData.sales} options={chartOptions} /></ChartCard>
+                <ChartCard title="客数 推移"><Line ref={chartRefs[1]} data={lineChartData.customers} options={chartOptions} /></ChartCard>
+                <ChartCard title="客単価 推移"><Line ref={chartRefs[2]} data={lineChartData.customer_spend} options={chartOptions} /></ChartCard>
             </div>
         </div>
     );
@@ -1526,6 +1598,7 @@ const getHaikiLyVariant = (lyCompareMode) => (lyCompareMode === 'weekday' ? 'dow
 const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
     const [lyCompareMode, setLyCompareMode] = useState('date');
     const { combinedReports, isLoading } = useDashboardCombinedReports(dateRange, onRefresh);
+    const { chartRefs, zoomOptions, isZoomed, resetZoom } = useChartZoom(2);
     const [filterStore, setFilterStore] = useState('');
     
     useEffect(() => {
@@ -1667,7 +1740,7 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
         }
     };
 
-    const lineChartOptions = {
+    const lineChartOptions = useMemo(() => withChartZoom({
         responsive: true,
         maintainAspectRatio: false,
         plugins: { legend: { position: 'top' } },
@@ -1678,7 +1751,7 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
                 },
             },
         },
-    };
+    }, zoomOptions), [zoomOptions]);
 
     const renderYoYSummaryRow = (cyValue, lyValue, cyAverage, lyAverage) => (
         <div className="text-xs text-gray-500 space-y-0.5 text-right">
@@ -1707,12 +1780,13 @@ const HaikiDashboard = ({ stores, dateRange, onRefresh }) => {
             <div className="flex flex-wrap justify-center gap-2 mb-6">
                 {stores.map(s => (<button key={s.id} onClick={() => setFilterStore(s.name)} className={`px-3 py-2 text-sm rounded-lg transition-all ${filterStore === s.name ? 'bg-blue-600 text-white shadow' : 'bg-gray-200 hover:bg-gray-300'}`}>{s.name}</button>))}
             </div>
+            <ChartZoomControls isZoomed={isZoomed} onReset={resetZoom} />
             <div className="grid grid-cols-1 gap-8">
                 <ChartCard title="廃棄・値下げ合計推移（店舗別・前年比較）">
-                    <Line data={totalWasteChartData} options={lineChartOptions} />
+                    <Line ref={chartRefs[0]} data={totalWasteChartData} options={lineChartOptions} />
                 </ChartCard>
                 <ChartCard title={`${filterStore || '全店舗'} 廃棄・値下げ項目別推移（前年比較）`}>
-                    <Line data={itemLineChartData} options={lineChartOptions} />
+                    <Line ref={chartRefs[1]} data={itemLineChartData} options={lineChartOptions} />
                 </ChartCard>
                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     <div className="md:col-span-2 bg-white p-6 rounded-lg shadow"><h2 className="text-xl font-bold text-gray-800 mb-4">{filterStore || '全店舗'} の内訳（本年）</h2><div className="h-80"><Doughnut data={doughnutData} options={doughnutOptions}/></div></div>
@@ -2664,6 +2738,7 @@ const HaikiTable = ({ reports, stores, dateRange, tableConfig }) => {
 };
 
 const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
+    const { chartRefs, zoomOptions, isZoomed, resetZoom } = useChartZoom(1);
     const { data: reports, isLoading: isLoadingReports } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
     const { data: reportsLY, isLoading: isLoadingReportsLY } = useReports(dateRange.startDateLY, dateRange.endDateLY, onRefresh);
 
@@ -2798,7 +2873,7 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
         return { labels, datasets };
     }, [combinedReports, dateRange, selectedStores, y1Metric, y2Metric]);
 
-    const chartOptions = {
+    const chartOptions = withChartZoom({
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
         plugins: { legend: { position: 'top' }, title: { display: true, text: 'カスタム分析グラフ' }},
@@ -2806,7 +2881,7 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
             y1: { type: 'linear', display: y1Metric.value !== 'none', position: 'left', ticks: { callback: value => `${value.toLocaleString()} ${y1Metric.unit || ''}` }},
             y2: { type: 'linear', display: y2Metric.value !== 'none', position: 'right', grid: { drawOnChartArea: false }, ticks: { callback: value => `${value.toLocaleString()} ${y2Metric.unit || ''}` }}
         }
-    };
+    }, zoomOptions);
 
     if (isLoadingReports || isLoadingReportsLY) {
         return (
@@ -2822,6 +2897,7 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
     return (
         <div>
             <h1 className="text-3xl font-bold text-gray-800 mb-6">カスタム分析</h1>
+            <ChartZoomControls isZoomed={isZoomed} onReset={resetZoom} />
             <div className="bg-white p-6 rounded-lg shadow space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div>
@@ -2849,7 +2925,7 @@ const CustomAnalysisPage = ({ stores, dateRange, onRefresh }) => {
                     </div>
                 </div>
                 <div className="h-96 pt-4 border-t">
-                    <Line data={chartData} options={chartOptions} />
+                    <Line ref={chartRefs[0]} data={chartData} options={chartOptions} />
                 </div>
             </div>
         </div>
