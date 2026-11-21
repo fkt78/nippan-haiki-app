@@ -1043,6 +1043,40 @@ const HaikiInputPage = ({ stores, employees }) => {
     );
 };
 
+// --- 前年一括入力：保存内容の決定（Firestore には触れない純粋関数） ---
+// 1行ぶんの入力から「何を保存するか」を決める。
+// ・読み込み時から変更が無い項目は保存しない（フォーカスを外しただけの上書きを防ぐ）
+// ・空欄は「未入力」として扱い、保存済みの値を 0 で上書きしない
+const planBulkLySave = (dayData) => {
+    const salesText = String(dayData.sales_ly ?? '').trim();
+    const customersText = String(dayData.customers_ly ?? '').trim();
+    const salesChanged = salesText !== String(dayData.loadedSales ?? '').trim();
+    const customersChanged = customersText !== String(dayData.loadedCustomers ?? '').trim();
+    const saveSales = salesChanged && salesText !== '';
+    const saveCustomers = customersChanged && customersText !== '';
+    if (!saveSales && !saveCustomers) return { action: 'skip' };
+    if ((saveSales && isNaN(Number(salesText))) || (saveCustomers && isNaN(Number(customersText)))) {
+        return { action: 'invalid' };
+    }
+    return { action: 'save', saveSales, saveCustomers, salesText, customersText };
+};
+
+// 保存するフィールドを組み立てる。existing は保存済みドキュメントの中身（無ければ {}）
+const buildBulkLyFields = (plan, existing = {}) => {
+    const fields = {};
+    let salesValue = plan.saveSales ? Number(plan.salesText) * 1000 : null;
+    let customersValue = plan.saveCustomers ? Number(plan.customersText) : null;
+    if (salesValue !== null) fields.sales_ly = salesValue;
+    if (customersValue !== null) fields.customers_ly = customersValue;
+    if (salesValue === null && typeof existing.sales_ly === 'number') salesValue = existing.sales_ly;
+    if (customersValue === null && typeof existing.customers_ly === 'number') customersValue = existing.customers_ly;
+    if (salesValue !== null && customersValue !== null) {
+        fields.customer_spend_ly = (salesValue > 0 && customersValue > 0) ? salesValue / customersValue : 0;
+    }
+    return fields;
+};
+// --- /前年一括入力：保存内容の決定 ---
+
 const BulkInputPage = ({ stores }) => {
     const currentYear = new Date().getFullYear();
     const [storeName, setStoreName] = useState('');
@@ -1058,7 +1092,9 @@ const BulkInputPage = ({ stores }) => {
             let newGridData = Array.from({ length: daysInMonth }, (_, i) => ({
                 day: i + 1,
                 dateString: `${year}-${String(month).padStart(2, '0')}-${String(i + 1).padStart(2, '0')}`,
-                sales_ly: '', customers_ly: ''
+                sales_ly: '', customers_ly: '',
+                // 読み込んだ時点の値。変更が無ければ保存しない（誤ってフォーカスを外しただけの上書きを防ぐ）
+                loadedSales: '', loadedCustomers: ''
             }));
 
             if (!storeName) {
@@ -1086,10 +1122,14 @@ const BulkInputPage = ({ stores }) => {
                 newGridData = newGridData.map(dayData => {
                     const report = reportsForStore[dayData.dateString];
                     if (report) {
+                        const loadedSales = report.sales_ly ? report.sales_ly / 1000 : (report.sales ? report.sales / 1000 : '');
+                        const loadedCustomers = report.customers_ly || report.customers || '';
                         return {
                             ...dayData,
-                            sales_ly: report.sales_ly ? report.sales_ly / 1000 : (report.sales ? report.sales / 1000 : ''),
-                            customers_ly: report.customers_ly || report.customers || ''
+                            sales_ly: loadedSales,
+                            customers_ly: loadedCustomers,
+                            loadedSales,
+                            loadedCustomers,
                         };
                     }
                     return dayData;
@@ -1120,27 +1160,39 @@ const BulkInputPage = ({ stores }) => {
         }
 
         const dayData = gridData[index];
-        if (!dayData.sales_ly && !dayData.customers_ly) {
+        const plan = planBulkLySave(dayData);
+        // 変更なし（フォーカスを外しただけ）・空欄のみ の場合は保存しない
+        if (plan.action === 'skip') {
             return;
         }
+        if (plan.action === 'invalid') {
+            setMessage({ type: 'error', text: `${dayData.dateString} の売上・客数は半角の数値で入力してください。` });
+            setTimeout(() => setMessage(''), 3000);
+            return;
+        }
+        const { saveSales, saveCustomers, salesText, customersText } = plan;
 
         setMessage({ type: 'info', text: `${dayData.dateString}のデータを保存中...` });
         const docId = `${dayData.dateString}_${storeName}`;
         const docRef = doc(db, dailyReportsPath, docId);
 
         try {
-            const salesValue = (Number(dayData.sales_ly) || 0) * 1000;
-            const customersValue = Number(dayData.customers_ly) || 0;
-            
+            // 片方だけ保存する場合は、保存済みの値と組み合わせて前年客単価を計算する
+            const existing = (saveSales && saveCustomers) ? {} : ((await getDoc(docRef)).data() || {});
             const payload = {
                 store: storeName,
                 date: getTimestampFromDateString(dayData.dateString),
-                sales_ly: salesValue,
-                customers_ly: customersValue,
-                customer_spend_ly: customersValue > 0 ? salesValue / customersValue : 0
+                ...buildBulkLyFields(plan, existing),
             };
 
             await setDoc(docRef, payload, { merge: true });
+
+            // 保存できた値を「読み込み済み」として記録し、同じ値での再保存を防ぐ
+            setGridData(prev => prev.map((row, i) => i === index ? {
+                ...row,
+                loadedSales: saveSales ? salesText : row.loadedSales,
+                loadedCustomers: saveCustomers ? customersText : row.loadedCustomers,
+            } : row));
             setMessage({ type: 'success', text: `${dayData.dateString} のデータを保存しました。` });
 
         } catch (error) {
