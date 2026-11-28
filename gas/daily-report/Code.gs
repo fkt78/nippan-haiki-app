@@ -70,6 +70,7 @@ function setup() {
         .everyDays(1)
         .inTimezone('Asia/Tokyo')
         .create();
+    setupWeekly();   // 週1回の分析メール（Weekly.gs）のトリガーも作る
     // 両プロジェクトに読み取りできるか確認しておく
     resolveStores();
     const r = resolveRecipients();
