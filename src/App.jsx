@@ -771,6 +771,31 @@ const BasicInfoSelectors = ({ date, setDate, storeName, setStoreName, stores, in
     </div>
 );
 
+// 保存ボタンの文言に店と日付を入れる（店・日付の選び間違いに保存前に気づけるように）
+const saveButtonLabel = (kind, storeName, date) => {
+    if (!storeName || !/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return `${kind}データを保存`;
+    const [y, m, d] = date.split('-').map(Number);
+    const dow = '日月火水木金土'[new Date(y, m - 1, d).getDay()];
+    const shortStore = storeName.replace(/^伊賀/, '').replace(/^平野/, '');
+    return `${shortStore} ${m}/${d}(${dow}) の${kind}を保存`;
+};
+
+// 廃棄の保存前チェック（純粋関数）。気になる点があれば確認文を返す。無ければ空配列
+//   ・5項目すべてが前日と同じ（前日の数字をそのまま入れた疑い）
+//   ・1万円を超えるマイナス（符号の入れ間違いの疑い）
+const WASTE_NEGATIVE_LIMIT = -10000;
+const checkWasteBeforeSave = (values, prevValues, labels) => {
+    const warnings = [];
+    const keys = Object.keys(values);
+    if (prevValues && keys.every(k => typeof prevValues[k] === 'number' && prevValues[k] === values[k]) && keys.some(k => values[k] !== 0)) {
+        warnings.push('5項目すべてが前日と同じ数字です。前日の数字をそのまま入れていませんか？');
+    }
+    keys.forEach(k => {
+        if (values[k] < WASTE_NEGATIVE_LIMIT) warnings.push(`${labels[k] || k} が ${values[k].toLocaleString('ja-JP')}円（マイナス）です。符号は合っていますか？`);
+    });
+    return warnings;
+};
+
 const NippoInputPage = ({ stores, employees }) => {
     const [date, setDate] = useState(getLocalDateString(new Date()));
     const [storeName, setStoreName] = useState('');
@@ -946,7 +971,7 @@ const NippoInputPage = ({ stores, employees }) => {
                 <InputField label="客数" name="customers" value={formData.customers} onChange={(e) => setFormData({...formData, customers: e.target.value})} type="text" inputMode="decimal" placeholder="例: 500" />
             </div>
             <div className="text-center pt-4">
-                <button type="submit" disabled={isLoading || !inputBy || !storeName} className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-400">{isLoading ? '保存中...' : '日販データを保存'}</button>
+                <button type="submit" disabled={isLoading || !inputBy || !storeName} className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-400">{isLoading ? '保存中...' : saveButtonLabel('日販', storeName, date)}</button>
             </div>
             {message && <p className={`mt-4 text-center p-3 rounded-lg ${message.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{message.text}</p>}
         </form>
@@ -1036,6 +1061,19 @@ const HaikiInputPage = ({ stores, employees }) => {
                     payload[key] = 0;
                 }
             });
+
+            // 保存後の値で、前日と同じ・大きなマイナス を確認する（該当しなければ何も聞かない）
+            const finalValues = {};
+            wasteKeys.forEach(key => { finalValues[key] = payload[key] ?? existing[key] ?? 0; });
+            const [py, pm, pd] = date.split('-').map(Number);
+            const prevDate = getLocalDateString(new Date(py, pm - 1, pd - 1));
+            const prevSnap = await getDoc(doc(db, dailyReportsPath, `${prevDate}_${storeName}`));
+            const labels = Object.fromEntries(HAIKI_WASTE_FIELDS.map(f => [f.key, f.label]));
+            const warnings = checkWasteBeforeSave(finalValues, prevSnap.exists() ? prevSnap.data() : null, labels);
+            if (warnings.length > 0 && !window.confirm(`${saveButtonLabel('廃棄', storeName, date).replace(/を保存$/, '')}\n\n${warnings.join('\n')}\n\nこのまま保存しますか？`)) {
+                setMessage({ type: 'error', text: '保存を取りやめました。数字を確認してください。' });
+                return;
+            }
              if (weatherData) {
                 payload.weather = weatherData;
             }
@@ -1063,7 +1101,7 @@ const HaikiInputPage = ({ stores, employees }) => {
                     <InputField label="販促値下げ (8%)" name="waste_promo_8" value={formData.waste_promo_8} onChange={(e) => setFormData({...formData, waste_promo_8: e.target.value})} type="text" inputMode="decimal" />
                     <InputField label="販促値下げ (10%)" name="waste_promo_10" value={formData.waste_promo_10} onChange={(e) => setFormData({...formData, waste_promo_10: e.target.value})} type="text" inputMode="decimal" />
                 </div>
-                <div className="text-center"><button type="submit" disabled={isLoading || !inputBy || !storeName} className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-400">{isLoading ? '保存中...' : '廃棄データを保存'}</button></div>
+                <div className="text-center"><button type="submit" disabled={isLoading || !inputBy || !storeName} className="w-full bg-blue-600 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 disabled:bg-gray-400">{isLoading ? '保存中...' : saveButtonLabel('廃棄', storeName, date)}</button></div>
                 {message && <p className={`mt-4 text-center p-3 rounded-lg ${message.type === 'error' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>{message.text}</p>}
             </form>
         </div>
