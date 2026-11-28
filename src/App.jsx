@@ -3947,6 +3947,228 @@ const CsvPage = ({ dateRange }) => {
 };
 
 // ==============================================================================
+// 時間帯分析（取り込んだ時間帯データ hourlyData から、時間帯ごとの平均客数・客単価を見る）
+//   ・24時間そろっていない日、日販の客数と大きくずれる日は集計から除く
+//   ・前年は日報メールと同じく「52週前の同じ曜日」の期間と比べる
+// ==============================================================================
+const JP_HOLIDAYS = new Set([
+    '2025-01-01', '2025-01-13', '2025-02-11', '2025-02-23', '2025-02-24', '2025-03-20', '2025-04-29', '2025-05-03', '2025-05-04', '2025-05-05', '2025-05-06',
+    '2025-07-21', '2025-08-11', '2025-09-15', '2025-09-23', '2025-10-13', '2025-11-03', '2025-11-23', '2025-11-24',
+    '2026-01-01', '2026-01-12', '2026-02-11', '2026-02-23', '2026-03-20', '2026-04-29', '2026-05-03', '2026-05-04', '2026-05-05', '2026-05-06',
+    '2026-07-20', '2026-08-11', '2026-09-21', '2026-09-22', '2026-09-23', '2026-10-12', '2026-11-03', '2026-11-23',
+    '2027-01-01', '2027-01-11', '2027-02-11', '2027-02-23', '2027-03-21', '2027-03-22', '2027-04-29', '2027-05-03', '2027-05-04', '2027-05-05',
+    '2027-07-19', '2027-08-11', '2027-09-20', '2027-09-23', '2027-10-11', '2027-11-03', '2027-11-23',
+]);
+const HOURLY_DAY_FILTERS = [
+    { key: 'all', label: '全日' },
+    { key: 'weekday', label: '平日' },
+    { key: 'holiday', label: '土日祝' },
+    ...['日', '月', '火', '水', '木', '金', '土'].map((w, i) => ({ key: `dow${i}`, label: `${w}曜` })),
+];
+const HOURLY_MISMATCH_LIMIT = (customers) => Math.max(10, Math.round(customers * 0.03));   // 客数ずれの許容
+
+const hourlyDayMatches = (dateStr, filterKey) => {
+    if (filterKey === 'all') return true;
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const dow = new Date(y, m - 1, d).getDay();
+    const off = dow === 0 || dow === 6 || JP_HOLIDAYS.has(dateStr);
+    if (filterKey === 'weekday') return !off;
+    if (filterKey === 'holiday') return off;
+    return filterKey === `dow${dow}`;
+};
+
+/** 店ごとに、時間帯別の客数・売上の合計と使った日数をまとめる（純粋関数） */
+const aggregateHourlyReports = (reports, storeNames, filterKey) => {
+    const out = {};
+    storeNames.forEach(n => { out[n] = { days: 0, excludedIncomplete: 0, excludedMismatch: 0, cust: Array(24).fill(0), sales: Array(24).fill(0) }; });
+    reports.forEach(r => {
+        const date = (r.id || '').slice(0, 10);
+        const store = r.store || (r.id || '').slice(11);
+        const acc = out[store];
+        if (!acc || !r.hourlyData || !hourlyDayMatches(date, filterKey)) return;
+        const { hoursFilled, custSum } = summarizeHourly(r.hourlyData);
+        if (hoursFilled !== 24) { acc.excludedIncomplete++; return; }
+        if (typeof r.customers === 'number' && r.customers > 0 && Math.abs(custSum - r.customers) > HOURLY_MISMATCH_LIMIT(r.customers)) {
+            acc.excludedMismatch++; return;
+        }
+        acc.days++;
+        for (let h = 0; h < 24; h++) {
+            const e = r.hourlyData[String(h)] || {};
+            acc.cust[h] += typeof e.customers === 'number' ? e.customers : 0;
+            acc.sales[h] += typeof e.sales === 'number' ? e.sales : 0;
+        }
+    });
+    Object.values(out).forEach(a => {
+        a.avgCust = a.cust.map(c => a.days ? c / a.days : null);
+        a.spend = a.cust.map((c, h) => (a.days && c > 0) ? a.sales[h] / c : null);
+        a.dayCust = a.days ? a.cust.reduce((s, v) => s + v, 0) / a.days : null;
+    });
+    return out;
+};
+
+const HOUR_LABELS = Array.from({ length: 24 }, (_, h) => `${h}時`);
+
+const HourlyAnalysisPage = ({ stores, dateRange, onRefresh }) => {
+    const [dayFilter, setDayFilter] = useState('all');
+    const [showLy, setShowLy] = useState(true);
+    const [hiddenStores, setHiddenStores] = useState([]);
+    const lyStart = useMemo(() => new Date(new Date(dateRange.startDate).setDate(dateRange.startDate.getDate() - 364)), [dateRange.startDate]);
+    const lyEnd = useMemo(() => new Date(new Date(dateRange.endDate).setDate(dateRange.endDate.getDate() - 364)), [dateRange.endDate]);
+    const { data: reports, isLoading } = useReports(dateRange.startDate, dateRange.endDate, onRefresh);
+    const { data: reportsLy, isLoading: isLoadingLy } = useReports(lyStart, lyEnd, onRefresh);
+
+    const storeNames = useMemo(() => stores.map(s => s.name), [stores]);
+    const colors = useMemo(() => getStoreChartColors(stores), [stores]);
+    const cy = useMemo(() => aggregateHourlyReports(reports, storeNames, dayFilter), [reports, storeNames, dayFilter]);
+    const ly = useMemo(() => aggregateHourlyReports(reportsLy, storeNames, dayFilter), [reportsLy, storeNames, dayFilter]);
+    const visible = storeNames.filter(n => !hiddenStores.includes(n));
+
+    const buildChart = (field) => {
+        const datasets = [];
+        visible.forEach(n => {
+            if (cy[n].days) datasets.push({ label: `${n}`, data: cy[n][field], borderColor: colors[n], backgroundColor: colors[n], borderWidth: 2.5, pointRadius: 2, tension: 0.3, spanGaps: true });
+            if (showLy && ly[n].days) datasets.push({ label: `${n}（前年）`, data: ly[n][field], borderColor: colors[n].replace(', 1)', ', 0.45)'), backgroundColor: colors[n].replace(', 1)', ', 0.45)'), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, tension: 0.3, spanGaps: true });
+        });
+        return { labels: HOUR_LABELS, datasets };
+    };
+    const chartOptions = (unit, digits) => ({
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: {
+            legend: { position: 'top', labels: { boxWidth: 14, font: { size: 11 } } },
+            tooltip: { callbacks: { label: (ctx) => ctx.parsed.y == null ? `${ctx.dataset.label}: －` : `${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString('ja-JP', { maximumFractionDigits: digits })}${unit}` } },
+        },
+        scales: { y: { beginAtZero: true, ticks: { callback: v => `${v.toLocaleString('ja-JP')}${unit}` } } },
+    });
+
+    // 表：各時間帯の平均客数（店の中で多い時間ほど濃く）
+    const maxCust = Object.fromEntries(visible.map(n => [n, Math.max(0, ...cy[n].avgCust.map(v => v || 0))]));
+    const fmt = (v, d = 0) => v == null ? '－' : v.toLocaleString('ja-JP', { maximumFractionDigits: d, minimumFractionDigits: d });
+    const peakOf = (a) => { if (!a.days) return null; let b = 0; a.avgCust.forEach((v, h) => { if (v > a.avgCust[b]) b = h; }); return b; };
+    const shareOf = (a, hours) => { if (!a.days) return null; const t = a.cust.reduce((s, v) => s + v, 0); return t ? hours.reduce((s, h) => s + a.cust[h], 0) / t : null; };
+    const NIGHT = [22, 23, 0, 1, 2, 3, 4, 5], MORNING = [6, 7, 8, 9], LUNCH = [11, 12, 13], EVENING = [17, 18, 19];
+    const lyLabel = `${getLocalDateString(lyStart)}〜${getLocalDateString(lyEnd)}`;
+
+    if (isLoading || isLoadingLy) return <div className="p-8 text-gray-500">データを読み込んでいます...</div>;
+
+    const anyCy = visible.some(n => cy[n].days);
+    return (
+        <div className="space-y-6">
+            <div>
+                <h2 className="text-3xl font-bold text-gray-800">時間帯分析</h2>
+                <p className="text-gray-600 mt-2">
+                    期間 {getLocalDateString(dateRange.startDate)}〜{getLocalDateString(dateRange.endDate)}（左の「分析期間」で変更）。
+                    前年は52週前の同じ曜日の期間（{lyLabel}）です。
+                </p>
+            </div>
+
+            <div className="bg-white rounded-xl shadow p-4 space-y-3">
+                <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-sm font-semibold text-gray-700 w-14">曜日</span>
+                    {HOURLY_DAY_FILTERS.map(f => (
+                        <button key={f.key} onClick={() => setDayFilter(f.key)}
+                            className={`px-3 py-1.5 rounded-lg text-sm border ${dayFilter === f.key ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white border-gray-300 text-gray-600 hover:border-blue-300'}`}>{f.label}</button>
+                    ))}
+                </div>
+                <div className="flex flex-wrap gap-4 items-center">
+                    <span className="text-sm font-semibold text-gray-700 w-14">店舗</span>
+                    {storeNames.map(n => (
+                        <label key={n} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                            <input type="checkbox" checked={!hiddenStores.includes(n)} onChange={() => setHiddenStores(p => p.includes(n) ? p.filter(x => x !== n) : [...p, n])} />
+                            <span className="inline-block w-3 h-3 rounded-full" style={{ background: colors[n] }}></span>{n}
+                        </label>
+                    ))}
+                    <label className="flex items-center gap-1.5 text-sm cursor-pointer ml-4">
+                        <input type="checkbox" checked={showLy} onChange={e => setShowLy(e.target.checked)} />前年を点線で重ねる
+                    </label>
+                </div>
+                <p className="text-xs text-gray-500">
+                    集計に使った日数：{visible.map(n => `${n} ${cy[n].days}日${showLy ? `（前年 ${ly[n].days}日）` : ''}`).join('／')}。
+                    24時間そろっていない日{visible.reduce((s, n) => s + cy[n].excludedIncomplete, 0)}件・日販の客数と大きくずれる日{visible.reduce((s, n) => s + cy[n].excludedMismatch, 0)}件は除いています。
+                    時間帯の売上は1,000円単位の入力のため、客単価は目安です。
+                </p>
+            </div>
+
+            {!anyCy ? (
+                <div className="bg-white rounded-xl shadow p-8 text-gray-500">この期間・曜日の時間帯データがありません（時間帯データは 2025/10/08 以降）。</div>
+            ) : (<>
+                <div className="bg-white rounded-xl shadow p-4">
+                    <h3 className="font-bold text-gray-800 mb-2">時間帯別 平均客数（1日あたり）</h3>
+                    <div style={{ height: 340 }}><Line data={buildChart('avgCust')} options={chartOptions('人', 1)} /></div>
+                </div>
+                <div className="bg-white rounded-xl shadow p-4">
+                    <h3 className="font-bold text-gray-800 mb-2">時間帯別 客単価</h3>
+                    <div style={{ height: 340 }}><Line data={buildChart('spend')} options={chartOptions('円', 0)} /></div>
+                </div>
+
+                <div className="bg-white rounded-xl shadow p-4 overflow-x-auto">
+                    <h3 className="font-bold text-gray-800 mb-3">店舗ごとの特徴</h3>
+                    <table className="w-full text-sm">
+                        <thead><tr className="text-gray-500 border-b"><th className="text-left py-2">項目</th>{visible.map(n => <th key={n} className="text-right">{n}</th>)}</tr></thead>
+                        <tbody>
+                            {[
+                                ['1日平均客数', a => `${fmt(a.dayCust)}人`, a => a.dayCust],
+                                ['一番忙しい時間', a => { const p = peakOf(a); return p == null ? '－' : `${p}時台（${fmt(a.avgCust[p], 1)}人）`; }, null],
+                                ['朝 6〜9時台の割合', a => shareOf(a, MORNING) == null ? '－' : `${(shareOf(a, MORNING) * 100).toFixed(1)}%`, a => shareOf(a, MORNING)],
+                                ['昼 11〜13時台の割合', a => shareOf(a, LUNCH) == null ? '－' : `${(shareOf(a, LUNCH) * 100).toFixed(1)}%`, a => shareOf(a, LUNCH)],
+                                ['夕方 17〜19時台の割合', a => shareOf(a, EVENING) == null ? '－' : `${(shareOf(a, EVENING) * 100).toFixed(1)}%`, a => shareOf(a, EVENING)],
+                                ['深夜 22〜5時台の割合', a => shareOf(a, NIGHT) == null ? '－' : `${(shareOf(a, NIGHT) * 100).toFixed(1)}%`, a => shareOf(a, NIGHT)],
+                            ].map(([label, f, num]) => (
+                                <tr key={label} className="border-b last:border-0">
+                                    <td className="py-2 text-gray-700">{label}</td>
+                                    {visible.map(n => {
+                                        const c = cy[n], l = ly[n];
+                                        let sub = null;
+                                        if (showLy && num && l.days && c.days && num(l) != null && num(c) != null) {
+                                            sub = label === '1日平均客数'
+                                                ? `前年比 ${((num(c) / num(l)) * 100).toFixed(1)}%`
+                                                : `前年 ${(num(l) * 100).toFixed(1)}%`;
+                                        }
+                                        return <td key={n} className="text-right py-2">{f(c)}{sub && <div className="text-xs text-gray-400">{sub}</div>}</td>;
+                                    })}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+
+                <div className="bg-white rounded-xl shadow p-4 overflow-x-auto">
+                    <h3 className="font-bold text-gray-800 mb-1">時間帯ごとの数字</h3>
+                    <p className="text-xs text-gray-500 mb-3">色が濃いほど、その店の中で客数が多い時間帯です。</p>
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="text-gray-500 border-b">
+                                <th className="text-left py-1">時間</th>
+                                {visible.map(n => <th key={n} colSpan={2} className="text-center">{n}</th>)}
+                            </tr>
+                            <tr className="text-xs text-gray-400 border-b">
+                                <th></th>
+                                {visible.map(n => <React.Fragment key={n}><th className="text-right px-2">平均客数</th><th className="text-right px-2">客単価</th></React.Fragment>)}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {HOUR_LABELS.map((lab, h) => (
+                                <tr key={h} className="border-b last:border-0">
+                                    <td className="py-1 text-gray-600">{lab}</td>
+                                    {visible.map(n => {
+                                        const v = cy[n].avgCust[h];
+                                        const alpha = v && maxCust[n] ? (v / maxCust[n]) * 0.55 : 0;
+                                        return <React.Fragment key={n}>
+                                            <td className="text-right px-2" style={{ background: `rgba(59,130,246,${alpha})` }}>{fmt(v, 1)}</td>
+                                            <td className="text-right px-2">{fmt(cy[n].spend[h])}</td>
+                                        </React.Fragment>;
+                                    })}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </>)}
+        </div>
+    );
+};
+
+// ==============================================================================
 // 日報メール設定（毎朝5時台に GAS が送る日報メールの宛先を役職で選ぶ）
 //   保存先: app_settings/daily_report_mail { enabled, roles, updatedAt }
 //   宛先の選び方は gas/daily-report/Code.gs の pickRecipients と同じ規則
@@ -4883,6 +5105,7 @@ function AppContent() {
       case 'bulkInput': return <BulkInputPage stores={stores} />;
       case 'csv': return <CsvPage dateRange={{startDate, endDate}} />;
       case 'hourlySync': return <HourlySyncPage stores={stores} />;
+      case 'hourlyAnalysis': return <HourlyAnalysisPage {...pageProps} />;
       case 'dailyMail': return <DailyMailSettingsPage />;
       case 'ai': return <AiAnalysisPage {...pageProps} aiSettings={aiSettings} />;
       case 'ai_forecast': return <AiForecastPage stores={stores} aiSettings={aiSettings} />;
@@ -4919,6 +5142,7 @@ function AppContent() {
                 <NavItem icon={<SlidersIcon />} label="カスタム分析" isActive={currentPage === 'custom'} onClick={() => setCurrentPage('custom')} />
                 <NavItem icon={<SparklesIcon />} label="AI分析" isActive={currentPage === 'ai'} onClick={() => setCurrentPage('ai')} />
                 <NavItem icon={<BrainIcon />} label="AI売上予測" isActive={currentPage === 'ai_forecast'} onClick={() => setCurrentPage('ai_forecast')} />
+                <NavItem icon={<ClockIcon />} label="時間帯分析" isActive={currentPage === 'hourlyAnalysis'} onClick={() => setCurrentPage('hourlyAnalysis')} />
                 <NavItem icon={<NoteIcon />} label="AI設定" isActive={currentPage === 'ai_settings'} onClick={() => setCurrentPage('ai_settings')} />
               </div>
             </div>
