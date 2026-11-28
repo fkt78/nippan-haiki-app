@@ -662,6 +662,32 @@ const useMasterData = (path, statusFilter = null) => {
 // Component Definitions
 // ==============================================================================
 
+// 分析期間の日付入力。
+// 年を打っている途中（例：0002-10-28）や空欄の値はアプリに渡さず、
+// 2000〜2100年のきちんとした日付になった時だけ反映する（途中の値で画面が真っ白になるのを防ぐ）
+const isUsablePeriodDate = (v) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+    const y = Number(v.slice(0, 4));
+    if (y < 2000 || y > 2100) return false;
+    const d = new Date(`${v}T00:00:00`);
+    return !isNaN(d.getTime()) && getLocalDateString(d) === v;
+};
+const PeriodDateInput = ({ date, onCommit }) => {
+    const committed = getLocalDateString(date);
+    const [draft, setDraft] = useState(committed);
+    useEffect(() => { setDraft(committed); }, [committed]);
+    return (
+        <input type="date" value={draft} min="2000-01-01" max="2100-12-31"
+            onChange={(e) => {
+                const v = e.target.value;
+                setDraft(v);
+                if (isUsablePeriodDate(v)) onCommit(new Date(`${v}T00:00:00`));
+            }}
+            onBlur={() => { if (!isUsablePeriodDate(draft)) setDraft(committed); }}
+            className="w-full p-2 border-2 border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"/>
+    );
+};
+
 const NavItem = ({ icon, label, isActive, onClick }) => {
     const IconWrapper = ({ children, isActive }) => (
         <div className={`w-12 h-12 flex items-center justify-center rounded-lg mb-3 transition-all duration-300 ${
@@ -5164,11 +5190,11 @@ function AppContent() {
             <div className="space-y-3 mb-4">
                 <div>
                     <label className="text-xs font-medium text-gray-600 mb-1 block">開始日</label>
-                    <input type="date" value={getLocalDateString(startDate)} onChange={(e) => setStartDate(new Date(`${e.target.value}T00:00:00`))} className="w-full p-2 border-2 border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"/>
+                    <PeriodDateInput date={startDate} onCommit={setStartDate} />
                 </div>
                 <div>
                     <label className="text-xs font-medium text-gray-600 mb-1 block">終了日</label>
-                    <input type="date" value={getLocalDateString(endDate)} onChange={(e) => setEndDate(new Date(`${e.target.value}T00:00:00`))} className="w-full p-2 border-2 border-gray-200 rounded-lg text-sm focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all"/>
+                    <PeriodDateInput date={endDate} onCommit={setEndDate} />
                 </div>
                  <button onClick={handleRefresh} className="w-full bg-gradient-to-r from-blue-500 to-blue-600 text-white py-3 rounded-lg hover:from-blue-600 hover:to-blue-700 flex items-center justify-center text-sm font-semibold shadow-md hover:shadow-lg transition-all transform hover:scale-105">
                     <RefreshCwIcon />
