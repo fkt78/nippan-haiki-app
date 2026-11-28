@@ -107,6 +107,7 @@ const BrainIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" heigh
 const MicIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>;
 const DatabaseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>;
 const NoteIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>;
+const MailIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="22 6 12 13 2 6"/></svg>;
 const ClockIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>;
 
 // ==============================================================================
@@ -3945,6 +3946,187 @@ const CsvPage = ({ dateRange }) => {
     );
 };
 
+// ==============================================================================
+// 日報メール設定（毎朝5時台に GAS が送る日報メールの宛先を役職で選ぶ）
+//   保存先: app_settings/daily_report_mail { enabled, roles, updatedAt }
+//   宛先の選び方は gas/daily-report/Code.gs の pickRecipients と同じ規則
+// ==============================================================================
+const MAIL_SETTINGS_PATH = `${appBasePath}/app_settings`;
+const MAIL_SETTINGS_DOC_ID = 'daily_report_mail';
+const SAGYOU_EMPLOYEES_PATH = 'artifacts/general-master-data/public/data/employees';
+const MAIL_ROLE_ORDER = ['経営者', 'マネージャー', 'リーダー', 'クルー', 'サポーター', 'トレーニー', '外注業者', '本部OFC'];
+const MAIL_DEFAULT_ROLES = ['リーダー', 'クルー', '経営者', '本部OFC'];
+const CARRIER_MAIL_DOMAINS = ['docomo.ne.jp', 'ezweb.ne.jp', 'au.com', 'softbank.ne.jp', 'i.softbank.jp', 'ymobile.ne.jp', 'y-mobile.ne.jp'];
+
+const isValidMailAddress = (s) => /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(s);
+
+// 在職中の従業員を、メールの状態つきで並べる（役職の選択に関係なく全員）
+const classifyMailEmployees = (employees, todayStr) => {
+    const seen = {};
+    const out = [];
+    employees.forEach(e => {
+        if (e.archivedDuplicate) return;
+        const retire = typeof e.retirementDate === 'string' ? e.retirementDate.trim() : '';
+        if (/^\d{4}-\d{2}-\d{2}$/.test(retire) && retire <= todayStr) return;
+        const name = `${(e.lastName || '').trim()} ${(e.firstName || '').trim()}`.trim() || (e.nickname || '').trim() || '(名前なし)';
+        const email = typeof e.email === 'string' ? e.email.trim() : '';
+        let status = 'ok';
+        if (!isValidMailAddress(email)) status = 'invalid';
+        else if (seen[email.toLowerCase()]) status = 'duplicate';
+        if (status === 'ok') seen[email.toLowerCase()] = true;
+        const domain = email.split('@')[1]?.toLowerCase() || '';
+        out.push({ name, role: e.role || 'その他', storeId: e.store || '', status, carrier: CARRIER_MAIL_DOMAINS.includes(domain) });
+    });
+    return out;
+};
+
+const DailyMailSettingsPage = () => {
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [people, setPeople] = useState([]);
+    const [storeNames, setStoreNames] = useState({});
+    const [saved, setSaved] = useState(null);      // { enabled, roles, updatedAt }
+    const [enabled, setEnabled] = useState(true);
+    const [roles, setRoles] = useState(MAIL_DEFAULT_ROLES);
+    const [saving, setSaving] = useState(false);
+    const [message, setMessage] = useState(null);
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const [settingsSnap, empSnap, storeSnap] = await Promise.all([
+                    getDoc(doc(db, MAIL_SETTINGS_PATH, MAIL_SETTINGS_DOC_ID)),
+                    getDocs(collection(sagyouDb, SAGYOU_EMPLOYEES_PATH)),
+                    getDocs(collection(sagyouDb, SAGYOU_STORES_PATH)),
+                ]);
+                const names = {};
+                storeSnap.forEach(d => { names[d.id] = d.data().name || d.id; });
+                setStoreNames(names);
+                setPeople(classifyMailEmployees(empSnap.docs.map(d => d.data()), getLocalDateString(new Date())));
+                if (settingsSnap.exists()) {
+                    const s = settingsSnap.data();
+                    const r = Array.isArray(s.roles) ? s.roles : MAIL_DEFAULT_ROLES;
+                    setSaved({ enabled: s.enabled !== false, roles: r, updatedAt: s.updatedAt?.toDate?.() || null });
+                    setEnabled(s.enabled !== false);
+                    setRoles(r);
+                }
+            } catch (e) {
+                console.error(e);
+                setError('読み込みに失敗しました：' + e.message);
+            } finally {
+                setLoading(false);
+            }
+        })();
+    }, []);
+
+    const roleList = useMemo(() => {
+        const extra = [...new Set(people.map(p => p.role))].filter(r => !MAIL_ROLE_ORDER.includes(r));
+        return [...MAIL_ROLE_ORDER, ...extra].filter(r => people.some(p => p.role === r) || roles.includes(r));
+    }, [people, roles]);
+
+    const recipients = useMemo(() => people
+        .filter(p => roles.includes(p.role))
+        .sort((a, b) => roleList.indexOf(a.role) - roleList.indexOf(b.role) || (storeNames[a.storeId] || '').localeCompare(storeNames[b.storeId] || '', 'ja')),
+        [people, roles, roleList, storeNames]);
+    const okCount = recipients.filter(p => p.status === 'ok').length;
+
+    const base = saved || { enabled: true, roles: MAIL_DEFAULT_ROLES };
+    const dirty = !saved || enabled !== base.enabled || [...roles].sort().join() !== [...base.roles].sort().join();
+
+    const toggleRole = (r) => setRoles(prev => prev.includes(r) ? prev.filter(x => x !== r) : [...prev, r]);
+
+    const handleSave = async () => {
+        setSaving(true);
+        setMessage(null);
+        try {
+            const ordered = roleList.filter(r => roles.includes(r));
+            await setDoc(doc(db, MAIL_SETTINGS_PATH, MAIL_SETTINGS_DOC_ID), { enabled, roles: ordered, updatedAt: Timestamp.now() }, { merge: true });
+            setSaved({ enabled, roles: ordered, updatedAt: new Date() });
+            setRoles(ordered);
+            setMessage({ type: 'success', text: `保存しました。明日の朝から ${enabled ? `${okCount}人` : 'あなただけ'} に届きます。` });
+        } catch (e) {
+            setMessage({ type: 'error', text: '保存に失敗しました：' + e.message });
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    if (loading) return <div className="p-8 text-gray-500">読み込み中...</div>;
+    if (error) return <div className="p-8 text-red-600">{error}</div>;
+
+    const statusLabel = (p) => {
+        if (p.status === 'invalid') return <span className="text-red-600 font-semibold">メール未登録（届きません）</span>;
+        if (p.status === 'duplicate') return <span className="text-gray-500">同じアドレスが他の人にもあり（1通だけ）</span>;
+        if (p.carrier) return <span className="text-amber-600">✓ 携帯キャリアのメール（迷惑メール設定で届かないことあり）</span>;
+        return <span className="text-green-600">✓</span>;
+    };
+
+    return (
+        <div className="max-w-4xl mx-auto space-y-6">
+            <div>
+                <h2 className="text-3xl font-bold text-gray-800">日報メール設定</h2>
+                <p className="text-gray-600 mt-2">毎朝5時台に、前日の日販・廃棄・各店の状況と時間帯データとのずれをメールで送ります。全員に3店舗分が届きます。</p>
+            </div>
+
+            <div className="bg-white rounded-xl shadow p-6 space-y-5">
+                <label className="flex items-center gap-3 cursor-pointer">
+                    <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} className="w-5 h-5" />
+                    <span className="font-semibold text-gray-800">スタッフへの配信をする</span>
+                    <span className="text-sm text-gray-500">（オフにすると、あなたにだけ届きます）</span>
+                </label>
+
+                <div className={enabled ? '' : 'opacity-40 pointer-events-none'}>
+                    <p className="font-semibold text-gray-800 mb-2">送る役職</p>
+                    <div className="flex flex-wrap gap-2">
+                        {roleList.map(r => {
+                            const n = people.filter(p => p.role === r && p.status === 'ok').length;
+                            const on = roles.includes(r);
+                            return (
+                                <button key={r} type="button" onClick={() => toggleRole(r)}
+                                    className={`px-4 py-2 rounded-lg border-2 text-sm font-medium transition-all ${on ? 'bg-blue-500 border-blue-500 text-white' : 'bg-white border-gray-300 text-gray-600 hover:border-blue-300'}`}>
+                                    {on ? '✓ ' : ''}{r}（{n}人）
+                                </button>
+                            );
+                        })}
+                    </div>
+                </div>
+
+                <div className="flex items-center gap-4 pt-2 border-t">
+                    <button onClick={handleSave} disabled={saving || !dirty}
+                        className="px-6 py-2 rounded-lg bg-blue-600 text-white font-semibold disabled:bg-gray-300">
+                        {saving ? '保存中...' : '保存'}
+                    </button>
+                    <span className="text-sm text-gray-500">
+                        {dirty ? '変更はまだ保存されていません' : saved?.updatedAt ? `保存済み（${saved.updatedAt.toLocaleString('ja-JP')}）` : '保存済み'}
+                    </span>
+                </div>
+                {message && <p className={message.type === 'success' ? 'text-green-700' : 'text-red-600'}>{message.text}</p>}
+            </div>
+
+            <div className="bg-white rounded-xl shadow p-6">
+                <p className="font-semibold text-gray-800 mb-1">届く人：{enabled ? `${okCount}人` : '0人'} ＋ あなた</p>
+                <p className="text-sm text-gray-500 mb-4">作業割当アプリの従業員マスタから、選んだ役職の在職者を毎朝その時点で選びます。宛先はBCCなので、受け取った人同士にはアドレスは見えません。</p>
+                {enabled && (
+                    <table className="w-full text-sm">
+                        <thead><tr className="text-left text-gray-500 border-b"><th className="py-2">名前</th><th>役職</th><th>所属</th><th>メール</th></tr></thead>
+                        <tbody>
+                            {recipients.map((p, i) => (
+                                <tr key={i} className="border-b last:border-0">
+                                    <td className="py-2">{p.name}</td>
+                                    <td>{p.role}</td>
+                                    <td>{storeNames[p.storeId] || p.storeId}</td>
+                                    <td>{statusLabel(p)}</td>
+                                </tr>
+                            ))}
+                            {recipients.length === 0 && <tr><td colSpan={4} className="py-4 text-gray-400">該当する人がいません</td></tr>}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+    );
+};
+
 const HourlySyncPage = ({ stores }) => {
     const yesterdayStr = useMemo(() => {
         const d = new Date();
@@ -4701,6 +4883,7 @@ function AppContent() {
       case 'bulkInput': return <BulkInputPage stores={stores} />;
       case 'csv': return <CsvPage dateRange={{startDate, endDate}} />;
       case 'hourlySync': return <HourlySyncPage stores={stores} />;
+      case 'dailyMail': return <DailyMailSettingsPage />;
       case 'ai': return <AiAnalysisPage {...pageProps} aiSettings={aiSettings} />;
       case 'ai_forecast': return <AiForecastPage stores={stores} aiSettings={aiSettings} />;
       case 'ai_settings': return <AiSettingsPage stores={stores} aiSettings={aiSettings} />;
@@ -4748,6 +4931,7 @@ function AppContent() {
                 <NavItem icon={<UploadCloudIcon />} label="前年一括入力" isActive={currentPage === 'bulkInput'} onClick={() => setCurrentPage('bulkInput')} />
                 <NavItem icon={<CsvIcon />} label="CSV入出力" isActive={currentPage === 'csv'} onClick={() => setCurrentPage('csv')} />
                 <NavItem icon={<ClockIcon />} label="時間帯取込" isActive={currentPage === 'hourlySync'} onClick={() => setCurrentPage('hourlySync')} />
+                <NavItem icon={<MailIcon />} label="日報メール" isActive={currentPage === 'dailyMail'} onClick={() => setCurrentPage('dailyMail')} />
               </div>
             </div>
         </nav>
